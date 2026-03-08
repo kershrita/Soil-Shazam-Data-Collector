@@ -155,80 +155,127 @@
       return;
     }
 
-    var html = "";
+    var tpl = document.getElementById("tpl-image-card");
+    var tagTpl = document.getElementById("tpl-label-tag");
+    var useTpl = tpl && tpl.content;
+    var frag = document.createDocumentFragment();
+
     data.images.forEach(function (img, idx) {
-      var corrClass = img.corrected ? " corrected" : "";
-      var rejectedClass = img.rejection ? " rejected" : "";
-      var removedClass = img.removed ? " rejected" : "";
-      var labelsHtml = "";
+      if (useTpl) {
+        var clone = tpl.content.cloneNode(true);
+        var card = clone.querySelector(".image-card");
+        card.dataset.idx = idx;
+        if (img.corrected) card.classList.add("corrected");
+        if (img.rejection) card.classList.add("rejected");
+        if (img.removed) card.classList.add("rejected");
 
-      if (img.labels) {
-        var tags = [];
-        Object.keys(img.labels).forEach(function (cat) {
-          var val = img.labels[cat];
-          if (val) tags.push('<span class="label-tag">' + escapeHtml(val) + "</span>");
-        });
-        labelsHtml = '<div class="image-card-labels">' + tags.join("") + "</div>";
+        var imgEl = card.querySelector("img");
+        imgEl.src = img.thumb_url || img.url;
+        var displayName = img.filename.split("/").pop();
+        imgEl.alt = displayName;
+
+        var nameEl = card.querySelector(".image-card-name");
+        nameEl.textContent = displayName;
+        nameEl.title = img.filename;
+
+        var labelsWrap = card.querySelector(".image-card-labels");
+        buildLabelTags(labelsWrap, img, tagTpl);
+
+        card.addEventListener("click", function () { openDetail(idx); });
+        frag.appendChild(clone);
+      } else {
+        // Fallback: string-based rendering
+        var corrClass = img.corrected ? " corrected" : "";
+        var rejectedClass = img.rejection ? " rejected" : "";
+        var removedClass = img.removed ? " rejected" : "";
+        var displayName = img.filename.split("/").pop();
+        var thumbSrc = img.thumb_url || img.url;
+        var labelsHtml = buildLabelTagsHtml(img);
+
+        var div = document.createElement("div");
+        div.innerHTML =
+          '<div class="image-card' + corrClass + rejectedClass + removedClass + '" data-idx="' + idx + '">' +
+          '<img src="' + escapeHtml(thumbSrc) + '" loading="lazy" alt="' + escapeHtml(displayName) + '">' +
+          '<div class="image-card-info">' +
+          '<div class="image-card-name" title="' + escapeHtml(img.filename) + '">' + escapeHtml(displayName) + "</div>" +
+          labelsHtml +
+          "</div></div>";
+        var cardEl = div.firstChild;
+        cardEl.addEventListener("click", function () { openDetail(idx); });
+        frag.appendChild(cardEl);
       }
-
-      if (img.rejection) {
-        var reasonText = img.rejection.reason === "overlay" ? "Overlay" : "Low score";
-        var scoreText = "";
-        if (img.rejection.reason === "overlay") {
-          scoreText = "ov=" + escapeHtml(img.rejection.overlay_score || "");
-        } else {
-          scoreText = "pos=" + escapeHtml(img.rejection.positive_score || "");
-        }
-        var sourceTag = img.source ? '<span class="label-tag score-tag">' + escapeHtml(img.source) + '</span>' : '';
-        labelsHtml =
-          '<div class="image-card-labels">' +
-          '<span class="label-tag rejection-tag">' + reasonText + "</span>" +
-          '<span class="label-tag score-tag">' + scoreText + "</span>" +
-          sourceTag +
-          "</div>";
-      }
-
-      if (img.removed) {
-        var sourceTag2 = img.source ? '<span class="label-tag score-tag">' + escapeHtml(img.source) + '</span>' : '';
-        labelsHtml =
-          '<div class="image-card-labels">' +
-          '<span class="label-tag rejection-tag">Removed</span>' +
-          sourceTag2 +
-          "</div>";
-      }
-
-      // Source tag for kept images in filter/dedup/label
-      if (!img.rejection && !img.removed && img.source) {
-        var existingLabels = labelsHtml;
-        var srcTag = '<span class="label-tag score-tag">' + escapeHtml(img.source) + '</span>';
-        if (existingLabels) {
-          // Insert source tag into existing labels div
-          labelsHtml = existingLabels.replace('</div>', srcTag + '</div>');
-        } else {
-          labelsHtml = '<div class="image-card-labels">' + srcTag + '</div>';
-        }
-      }
-
-      // Extract display name (last part of path for nested files)
-      var displayName = img.filename.split("/").pop();
-
-      html +=
-        '<div class="image-card' + corrClass + rejectedClass + removedClass + '" data-idx="' + idx + '">' +
-        '<img src="' + escapeHtml(img.url) + '" loading="lazy" alt="' + escapeHtml(displayName) + '">' +
-        '<div class="image-card-info">' +
-        '<div class="image-card-name" title="' + escapeHtml(img.filename) + '">' + escapeHtml(displayName) + "</div>" +
-        labelsHtml +
-        "</div></div>";
     });
-    grid.innerHTML = html;
 
-    // Click handlers
-    grid.querySelectorAll(".image-card").forEach(function (card) {
-      card.addEventListener("click", function () {
-        var idx = parseInt(this.dataset.idx, 10);
-        openDetail(idx);
+    grid.innerHTML = "";
+    grid.appendChild(frag);
+  }
+
+  function buildLabelTags(wrap, img, tagTpl) {
+    if (img.rejection) {
+      addTag(wrap, tagTpl, img.rejection.reason === "overlay" ? "Overlay" : "Low score", "rejection-tag");
+      var scoreText = img.rejection.reason === "overlay"
+        ? "ov=" + (img.rejection.overlay_score || "")
+        : "pos=" + (img.rejection.positive_score || "");
+      addTag(wrap, tagTpl, scoreText, "score-tag");
+      if (img.source) addTag(wrap, tagTpl, img.source, "score-tag");
+      return;
+    }
+    if (img.removed) {
+      addTag(wrap, tagTpl, "Removed", "rejection-tag");
+      if (img.source) addTag(wrap, tagTpl, img.source, "score-tag");
+      return;
+    }
+    if (img.labels) {
+      Object.keys(img.labels).forEach(function (cat) {
+        if (img.labels[cat]) addTag(wrap, tagTpl, img.labels[cat], "");
       });
-    });
+    }
+    if (img.source) addTag(wrap, tagTpl, img.source, "score-tag");
+  }
+
+  function addTag(wrap, tagTpl, text, extraClass) {
+    if (tagTpl && tagTpl.content) {
+      var t = tagTpl.content.cloneNode(true);
+      var span = t.querySelector(".label-tag");
+      span.textContent = text;
+      if (extraClass) span.classList.add(extraClass);
+      wrap.appendChild(t);
+    } else {
+      var span = document.createElement("span");
+      span.className = "label-tag" + (extraClass ? " " + extraClass : "");
+      span.textContent = text;
+      wrap.appendChild(span);
+    }
+  }
+
+  function buildLabelTagsHtml(img) {
+    var html = "";
+    if (img.rejection) {
+      var reasonText = img.rejection.reason === "overlay" ? "Overlay" : "Low score";
+      var scoreText = img.rejection.reason === "overlay"
+        ? "ov=" + escapeHtml(img.rejection.overlay_score || "")
+        : "pos=" + escapeHtml(img.rejection.positive_score || "");
+      var sourceTag = img.source ? '<span class="label-tag score-tag">' + escapeHtml(img.source) + '</span>' : '';
+      return '<div class="image-card-labels">' +
+        '<span class="label-tag rejection-tag">' + reasonText + "</span>" +
+        '<span class="label-tag score-tag">' + scoreText + "</span>" +
+        sourceTag + "</div>";
+    }
+    if (img.removed) {
+      var sourceTag2 = img.source ? '<span class="label-tag score-tag">' + escapeHtml(img.source) + '</span>' : '';
+      return '<div class="image-card-labels"><span class="label-tag rejection-tag">Removed</span>' + sourceTag2 + "</div>";
+    }
+    if (img.labels) {
+      var tags = [];
+      Object.keys(img.labels).forEach(function (cat) {
+        if (img.labels[cat]) tags.push('<span class="label-tag">' + escapeHtml(img.labels[cat]) + "</span>");
+      });
+      if (img.source) tags.push('<span class="label-tag score-tag">' + escapeHtml(img.source) + '</span>');
+      if (tags.length) html = '<div class="image-card-labels">' + tags.join("") + "</div>";
+    } else if (img.source) {
+      html = '<div class="image-card-labels"><span class="label-tag score-tag">' + escapeHtml(img.source) + '</span></div>';
+    }
+    return html;
   }
 
   function renderPagination(data) {
@@ -281,8 +328,17 @@
     overlay.classList.remove("hidden");
     document.body.style.overflow = "hidden";
 
+    // Apply layout based on step
+    var content = overlay.querySelector(".detail-content");
+    if (window.STEP_ID === "download" || window.STEP_ID === "resize") {
+      content.classList.add("layout-centered");
+    } else {
+      content.classList.remove("layout-centered");
+    }
+
     document.getElementById("detail-img").src = img.url;
     document.getElementById("detail-filename").textContent = img.filename;
+    updateDetailCounter();
 
     // Reset sections
     document.getElementById("detail-labels").innerHTML = "";
@@ -297,6 +353,8 @@
     if (dimsEl) dimsEl.innerHTML = "";
     var dupsEl = document.getElementById("detail-duplicates");
     if (dupsEl) dupsEl.innerHTML = "";
+    var cmpWrapReset = document.getElementById("detail-compare-wrap");
+    if (cmpWrapReset) cmpWrapReset.innerHTML = "";
 
     var corrForm = document.getElementById("correction-form");
     if (corrForm) {
@@ -410,7 +468,7 @@
       scoresEl.innerHTML = html;
     }
 
-    // Soil filter scores (for filter/rejected steps)
+    // Soil filter scores (for filter/rejected steps) — with threshold bars
     var soilScoresEl = document.getElementById("detail-soil-scores");
     if (soilScoresEl && (detail.soil_scores || detail.overlay_scores)) {
       var html = "";
@@ -419,16 +477,39 @@
       }
       if (detail.soil_scores) {
         var s = detail.soil_scores;
-        html += '<div class="soil-score-row"><strong>Soil filter:</strong> ';
-        html += "positive=" + escapeHtml(s.positive) + " | negative=" + escapeHtml(s.negative);
-        html += " | kept=" + escapeHtml(s.kept) + "</div>";
+        var pos = parseFloat(s.positive) || 0;
+        var neg = parseFloat(s.negative) || 0;
+        html += '<div class="threshold-section"><strong>Soil filter</strong>';
+        html += '<div class="threshold-bar-row">';
+        html += '<span class="threshold-label">Positive</span>';
+        html += '<div class="threshold-track"><div class="threshold-fill threshold-good" style="width:' + Math.min(pos * 100, 100) + '%"></div>';
+        html += '<div class="threshold-marker" style="left:50%" title="Threshold: 0.5"></div></div>';
+        html += '<span class="threshold-value" style="color:' + (pos >= 0.5 ? 'var(--good)' : 'var(--bad)') + '">' + pos.toFixed(3) + '</span></div>';
+        html += '<div class="threshold-bar-row">';
+        html += '<span class="threshold-label">Negative</span>';
+        html += '<div class="threshold-track"><div class="threshold-fill threshold-bad" style="width:' + Math.min(neg * 100, 100) + '%"></div>';
+        html += '<div class="threshold-marker" style="left:50%" title="Threshold: 0.5"></div></div>';
+        html += '<span class="threshold-value" style="color:' + (neg < 0.5 ? 'var(--good)' : 'var(--bad)') + '">' + neg.toFixed(3) + '</span></div>';
+        html += '<div class="soil-score-row" style="font-size:.75rem;color:var(--text-muted)">kept=' + escapeHtml(s.kept) + '</div>';
+        html += '</div>';
       }
       if (detail.overlay_scores) {
         var o = detail.overlay_scores;
-        html += '<div class="soil-score-row"><strong>Overlay filter:</strong> ';
-        html += "overlay=" + escapeHtml(o.overlay_score);
-        html += " | clean=" + escapeHtml(o.clean_score);
-        html += " | flagged=" + escapeHtml(o.flagged) + "</div>";
+        var ovScore = parseFloat(o.overlay_score) || 0;
+        var clScore = parseFloat(o.clean_score) || 0;
+        html += '<div class="threshold-section"><strong>Overlay filter</strong>';
+        html += '<div class="threshold-bar-row">';
+        html += '<span class="threshold-label">Overlay</span>';
+        html += '<div class="threshold-track"><div class="threshold-fill threshold-bad" style="width:' + Math.min(ovScore * 100, 100) + '%"></div>';
+        html += '<div class="threshold-marker" style="left:50%" title="Threshold: 0.5"></div></div>';
+        html += '<span class="threshold-value" style="color:' + (ovScore < 0.5 ? 'var(--good)' : 'var(--bad)') + '">' + ovScore.toFixed(3) + '</span></div>';
+        html += '<div class="threshold-bar-row">';
+        html += '<span class="threshold-label">Clean</span>';
+        html += '<div class="threshold-track"><div class="threshold-fill threshold-good" style="width:' + Math.min(clScore * 100, 100) + '%"></div>';
+        html += '<div class="threshold-marker" style="left:50%" title="Threshold: 0.5"></div></div>';
+        html += '<span class="threshold-value" style="color:' + (clScore >= 0.5 ? 'var(--good)' : 'var(--bad)') + '">' + clScore.toFixed(3) + '</span></div>';
+        html += '<div class="soil-score-row" style="font-size:.75rem;color:var(--text-muted)">flagged=' + escapeHtml(o.flagged) + '</div>';
+        html += '</div>';
       }
       soilScoresEl.innerHTML = html;
     }
@@ -510,6 +591,41 @@
       }
     }
 
+    // Image comparison mode (dedup step)
+    var cmpWrap = document.getElementById("detail-compare-wrap");
+    if (cmpWrap && (detail.duplicate_of_url || (detail.duplicates && detail.duplicates.length > 0))) {
+      var compareWith = null;
+      var compareLabel = "";
+      if (detail.duplicate_of_url) {
+        compareWith = detail.duplicate_of_url;
+        compareLabel = "Kept: " + escapeHtml(detail.duplicate_of);
+      } else if (detail.duplicates && detail.duplicates.length > 0) {
+        compareWith = detail.duplicates[0].url;
+        compareLabel = "Removed: " + escapeHtml(detail.duplicates[0].filename);
+      }
+      if (compareWith) {
+        var cmpHtml = '<div class="compare-section">';
+        cmpHtml += '<button class="btn btn-small compare-toggle-btn" id="btn-compare-toggle">Compare side-by-side</button>';
+        cmpHtml += '<div class="compare-view hidden" id="compare-view">';
+        cmpHtml += '<div class="compare-side"><div class="compare-label">Current: ' + escapeHtml(detail.filename) + '</div>';
+        cmpHtml += '<img src="' + escapeHtml(detail.url) + '" alt="Current"></div>';
+        cmpHtml += '<div class="compare-side"><div class="compare-label">' + compareLabel + '</div>';
+        cmpHtml += '<img src="' + escapeHtml(compareWith) + '" alt="Compare"></div>';
+        cmpHtml += '</div></div>';
+        cmpWrap.innerHTML = cmpHtml;
+
+        var toggleBtn = document.getElementById("btn-compare-toggle");
+        var compareView = document.getElementById("compare-view");
+        if (toggleBtn && compareView) {
+          toggleBtn.addEventListener("click", function () {
+            compareView.classList.toggle("hidden");
+            toggleBtn.textContent = compareView.classList.contains("hidden")
+              ? "Compare side-by-side" : "Hide comparison";
+          });
+        }
+      }
+    }
+
     // Pre-fill correction form with current labels
     if (detail.labels) {
       window.CATEGORIES.forEach(function (cat) {
@@ -524,10 +640,26 @@
     }
   }
 
+  function updateDetailCounter() {
+    var el = document.getElementById("detail-counter");
+    if (el) {
+      var imgNum = currentIndex + 1;
+      var imgTotal = currentImages.length;
+      var txt = "Image " + imgNum + " / " + imgTotal;
+      if (totalPages > 1) {
+        txt += "  \u00b7  Page " + currentPage + " / " + totalPages;
+      }
+      el.textContent = txt;
+    }
+  }
+
   function closeDetail() {
     document.getElementById("detail-overlay").classList.add("hidden");
     document.body.style.overflow = "";
     currentIndex = -1;
+    // Reset comparison mode
+    var cmpWrap = document.getElementById("detail-compare-wrap");
+    if (cmpWrap) cmpWrap.innerHTML = "";
   }
 
   /* ─── Corrections ───────────────────────────────────────────────────── */
@@ -604,6 +736,88 @@
       });
   }
 
+  /* ─── Batch selection mode ────────────────────────────────────────── */
+
+  let batchMode = false;
+  let selectedImages = new Set();
+
+  function toggleBatchMode() {
+    batchMode = !batchMode;
+    selectedImages.clear();
+    var btn = document.getElementById("btn-batch-toggle");
+    if (btn) btn.textContent = batchMode ? "Cancel batch" : "Batch select";
+    var batchBar = document.getElementById("batch-bar");
+    if (batchBar) batchBar.classList.toggle("hidden", !batchMode);
+    updateBatchCount();
+    // Toggle checkboxes on existing cards
+    document.querySelectorAll(".image-card").forEach(function (card) {
+      var cb = card.querySelector(".batch-cb");
+      if (batchMode && !cb) {
+        var checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.className = "batch-cb";
+        checkbox.addEventListener("click", function (e) { e.stopPropagation(); });
+        checkbox.addEventListener("change", function () {
+          var idx = parseInt(card.dataset.idx, 10);
+          var img = currentImages[idx];
+          if (img) {
+            if (this.checked) selectedImages.add(img.filename);
+            else selectedImages.delete(img.filename);
+          }
+          updateBatchCount();
+        });
+        card.insertBefore(checkbox, card.firstChild);
+      } else if (!batchMode && cb) {
+        cb.remove();
+      }
+    });
+  }
+
+  function updateBatchCount() {
+    var el = document.getElementById("batch-count");
+    if (el) el.textContent = selectedImages.size + " selected";
+  }
+
+  function submitBatchCorrection() {
+    if (selectedImages.size === 0) return;
+    var data = { images: Array.from(selectedImages) };
+    var hasChange = false;
+    window.CATEGORIES.forEach(function (cat) {
+      var sel = document.getElementById("batch-" + cat);
+      if (sel && sel.value) {
+        data[cat] = sel.value;
+        hasChange = true;
+      }
+    });
+    var statusEl = document.getElementById("batch-status");
+    if (!hasChange) {
+      if (statusEl) { statusEl.textContent = "Select at least one label."; statusEl.className = "corr-status error"; }
+      return;
+    }
+    fetch("/api/corrections/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        if (resp.status === "saved") {
+          if (statusEl) { statusEl.textContent = resp.count + " corrections saved!"; statusEl.className = "corr-status success"; }
+          selectedImages.forEach(function (fn) {
+            currentImages.forEach(function (img, idx) {
+              if (img.filename === fn) {
+                img.corrected = true;
+                var card = document.querySelector('.image-card[data-idx="' + idx + '"]');
+                if (card) card.classList.add("corrected");
+              }
+            });
+          });
+        } else {
+          if (statusEl) { statusEl.textContent = resp.error || "Error."; statusEl.className = "corr-status error"; }
+        }
+      });
+  }
+
   /* ─── Utilities ─────────────────────────────────────────────────────── */
 
   function escapeHtml(s) {
@@ -656,26 +870,56 @@
       });
     }
 
+    // Cross-page navigation helpers
+    function navigatePrev() {
+      if (currentIndex > 0) {
+        openDetail(currentIndex - 1);
+      } else if (currentPage > 1) {
+        currentPage--;
+        loadImagesAndOpen(-1); // -1 = open last image
+      }
+    }
+
+    function navigateNext() {
+      if (currentIndex < currentImages.length - 1) {
+        openDetail(currentIndex + 1);
+      } else if (currentPage < totalPages) {
+        currentPage++;
+        loadImagesAndOpen(0); // 0 = open first image
+      }
+    }
+
+    function loadImagesAndOpen(targetIdx) {
+      if (!window.STEP_ID) return;
+      fetch("/api/images/" + window.STEP_ID + "?" + buildParams())
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          currentImages = data.images;
+          totalPages = data.pages;
+          renderGrid(data);
+          renderPagination(data);
+          var idx = targetIdx < 0 ? data.images.length - 1 : targetIdx;
+          if (data.images.length > 0) openDetail(idx);
+          updateDetailCounter();
+        });
+    }
+
     // Keyboard navigation
     document.addEventListener("keydown", function (e) {
       if (document.getElementById("detail-overlay").classList.contains("hidden")) return;
       if (e.key === "Escape") closeDetail();
-      if (e.key === "ArrowLeft" && currentIndex > 0) openDetail(currentIndex - 1);
-      if (e.key === "ArrowRight" && currentIndex < currentImages.length - 1) openDetail(currentIndex + 1);
+      if (e.key === "ArrowLeft") navigatePrev();
+      if (e.key === "ArrowRight") navigateNext();
     });
 
     // Nav buttons
     var prevBtn = document.getElementById("detail-prev");
     if (prevBtn) {
-      prevBtn.addEventListener("click", function () {
-        if (currentIndex > 0) openDetail(currentIndex - 1);
-      });
+      prevBtn.addEventListener("click", navigatePrev);
     }
     var nextBtn = document.getElementById("detail-next");
     if (nextBtn) {
-      nextBtn.addEventListener("click", function () {
-        if (currentIndex < currentImages.length - 1) openDetail(currentIndex + 1);
-      });
+      nextBtn.addEventListener("click", navigateNext);
     }
 
     // Correction form
@@ -684,5 +928,19 @@
 
     var revertBtn = document.getElementById("btn-revert");
     if (revertBtn) revertBtn.addEventListener("click", revertCorrection);
+
+    // Batch mode
+    var batchToggle = document.getElementById("btn-batch-toggle");
+    if (batchToggle) batchToggle.addEventListener("click", toggleBatchMode);
+    var batchSubmit = document.getElementById("btn-batch-submit");
+    if (batchSubmit) batchSubmit.addEventListener("click", submitBatchCorrection);
+
+    // Export corrections
+    var exportBtn = document.getElementById("btn-export-corrections");
+    if (exportBtn) {
+      exportBtn.addEventListener("click", function () {
+        window.location.href = "/api/corrections/export";
+      });
+    }
   };
 })();

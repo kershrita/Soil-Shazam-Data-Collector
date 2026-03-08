@@ -89,10 +89,45 @@
     {% endfor %}
   {% endif %}
   <button id="btn-clear-filters" class="btn btn-small">Clear</button>
+  {% if step.has_labels %}
+  <button id="btn-batch-toggle" class="btn btn-small">Batch select</button>
+  <button id="btn-export-corrections" class="btn btn-small">Export CSV</button>
+  {% endif %}
 </div>
+
+{% if step.has_labels %}
+<!-- Batch correction bar -->
+<div id="batch-bar" class="batch-bar hidden">
+  <span id="batch-count" class="batch-count">0 selected</span>
+  {% for cat in categories %}
+  <select id="batch-{{ cat }}" class="corr-select batch-select">
+    <option value="">{{ cat.replace('_', ' ').title() }}</option>
+    {% for opt in label_options_all.get(cat, []) %}
+    <option value="{{ opt }}">{{ opt }}</option>
+    {% endfor %}
+  </select>
+  {% endfor %}
+  <button id="btn-batch-submit" class="btn btn-primary btn-small">Apply to selected</button>
+  <span id="batch-status" class="corr-status"></span>
+</div>
+{% endif %}
 
 <!-- Image grid (loaded via JS) -->
 <div id="image-grid" class="image-grid"></div>
+
+<!-- Grid card template -->
+<template id="tpl-image-card">
+  <div class="image-card">
+    <img loading="lazy" alt="">
+    <div class="image-card-info">
+      <div class="image-card-name"></div>
+      <div class="image-card-labels"></div>
+    </div>
+  </div>
+</template>
+<template id="tpl-label-tag">
+  <span class="label-tag"></span>
+</template>
 
 <!-- Pagination -->
 <div id="pagination" class="pagination"></div>
@@ -102,17 +137,19 @@
   <div class="detail-panel">
     <button id="detail-close" class="detail-close">&times;</button>
     <div class="detail-content">
+      <div class="detail-info">
+        <h3 id="detail-filename"></h3>
+        <div id="detail-dimensions" class="detail-dimensions"></div>
+      </div>
       <div class="detail-image-wrap">
         <img id="detail-img" src="" alt="">
         <div id="detail-resize-compare"></div>
       </div>
-      <div class="detail-info">
-        <h3 id="detail-filename"></h3>
-        <div id="detail-dimensions" class="detail-dimensions"></div>
-
+      <div class="detail-info detail-info-bottom">
         <div id="detail-labels" class="detail-labels"></div>
         <div id="detail-rejection" class="detail-rejection"></div>
         <div id="detail-duplicates" class="detail-duplicates"></div>
+        <div id="detail-compare-wrap"></div>
         <div id="detail-scores" class="detail-scores"></div>
         <div id="detail-soil-scores" class="detail-soil-scores"></div>
 
@@ -141,12 +178,13 @@
         </div>
         {% endif %}
 
-        <!-- Navigation between images -->
-        <div class="detail-nav">
-          <button id="detail-prev" class="btn btn-small">&larr; Prev</button>
-          <button id="detail-next" class="btn btn-small">Next &rarr;</button>
-        </div>
       </div>
+    </div>
+    <!-- Navigation footer -->
+    <div class="detail-nav">
+      <button id="detail-prev" class="btn btn-small">&larr; Prev</button>
+      <span id="detail-counter" class="detail-counter"></span>
+      <button id="detail-next" class="btn btn-small">Next &rarr;</button>
     </div>
   </div>
 </div>
