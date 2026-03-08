@@ -1,5 +1,8 @@
 # Pipeline configuration — thresholds, resolution, batch sizes, paths.
 
+# --- Shared parallelism ---
+num_workers: 0                   # Parallel workers for all CPU/IO-bound steps (0=auto, uses all CPUs)
+
 # --- Resolution settings ---
 resolution:
   min_shortest_side: 384       # Discard images with shortest side < this
@@ -17,13 +20,15 @@ clip:
 # --- Filter thresholds ---
 filter:
   soil_threshold: 0.24          # Minimum CLIP similarity to soil prompts to keep
-  overlay_margin: 0.02          # Discard if overlay_score - clean_score > this (watermark/text)
+  overlay_margin: -0.03          # Discard if overlay_score - clean_score > this (watermark/text)
 
 # --- Download settings ---
 download:
   limit_per_query_per_source: 200   # Max images per query per source
   timeout: 15                       # HTTP timeout in seconds
   max_retries: 4                    # Retry failed downloads
+  workers_per_source: 4             # Parallel query workers per source (keep low to avoid IP bans)
+  request_delay: 1.0                # Seconds between requests per source (rate limiting)
 
 # --- Deduplication settings ---
 dedup:

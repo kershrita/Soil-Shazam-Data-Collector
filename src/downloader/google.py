@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
+import time
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -27,6 +29,9 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+# Delay between search requests to avoid IP bans
+_QUERY_DELAY = 2.0
 
 
 def _extract_image_urls(html: str, limit: int) -> list[str]:
@@ -63,6 +68,8 @@ class GoogleDownloader(ImageDownloader):
     """Download images from Google via direct HTTP scraping."""
 
     source_name = "google"
+    _last_search_time: float = 0.0
+    _rate_lock = threading.Lock()
 
     def download(
         self,
@@ -78,6 +85,14 @@ class GoogleDownloader(ImageDownloader):
             return list(target_dir.iterdir())
 
         logger.info(f"[google] Downloading up to {limit} images for '{query}'")
+
+        # Rate-limit: wait between searches (thread-safe)
+        with GoogleDownloader._rate_lock:
+            elapsed = time.time() - GoogleDownloader._last_search_time
+            if elapsed < _QUERY_DELAY:
+                time.sleep(_QUERY_DELAY - elapsed)
+            GoogleDownloader._last_search_time = time.time()
+
         downloaded: list[Path] = []
         session = requests.Session()
         session.headers.update(_HEADERS)

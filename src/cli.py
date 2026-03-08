@@ -51,6 +51,14 @@ def _resolve_path(cfg_path: str) -> Path:
     return p
 
 
+def _get_workers(cfg: dict) -> int:
+    """Return shared worker count from config (0 → os.cpu_count)."""
+    import os
+    w = cfg.get("num_workers", 0)
+    return w if w > 0 else (os.cpu_count() or 4)
+    return p
+
+
 # ─── DOWNLOAD ────────────────────────────────────────────────────────────────
 
 
@@ -58,7 +66,6 @@ def _resolve_path(cfg_path: str) -> Path:
 def download(
     source: str = typer.Option("all", help="Source: bing, google, flickr, or all"),
     limit: int = typer.Option(0, help="Max images per query per source (0 = use config default)"),
-    workers: int = typer.Option(4, help="Parallel query workers per source"),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
@@ -72,6 +79,8 @@ def download(
     cfg = _get_config(config_dir)
     queries = _get_queries(config_dir)
     dl_cfg = cfg["download"]
+    workers = dl_cfg.get("workers_per_source", 4)
+    request_delay = dl_cfg.get("request_delay", 1.0)
     per_query_limit = limit if limit > 0 else dl_cfg["limit_per_query_per_source"]
     timeout = dl_cfg.get("timeout", 30)
     raw_dir = _resolve_path(cfg["paths"]["raw"])
@@ -98,11 +107,13 @@ def download(
 
     def _run_source(dl):
         """Run all queries for one source using a thread pool."""
+        import time
         source_name = dl.source_name
         source_total = 0
 
         def _download_query(query: str) -> int:
             paths = dl.download(query, per_query_limit, raw_dir, timeout)
+            time.sleep(request_delay)  # rate-limit between queries
             return len(paths)
 
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=source_name) as pool:
@@ -139,7 +150,6 @@ def download(
 
 @app.command()
 def resize(
-    workers: int = typer.Option(16, help="Parallel processing workers"),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
@@ -148,6 +158,7 @@ def resize(
 
     cfg = _get_config(config_dir)
     res_cfg = cfg["resolution"]
+    workers = _get_workers(cfg)
     raw_dir = _resolve_path(cfg["paths"]["raw"])
     resized_dir = _resolve_path(cfg["paths"]["resized"])
 
@@ -284,6 +295,7 @@ def dedup(
         input_dir=resized_dir,
         output_dir=deduped_dir,
         phash_threshold=dedup_cfg["phash_threshold"],
+        num_workers=_get_workers(cfg),
     )
 
 
@@ -335,13 +347,13 @@ def run_all(
     # Step 1: Download
     if not skip_download:
         logger.info("\n>>> STEP 1/5: Downloading images...")
-        download(source=source, limit=limit, workers=4, config_dir=config_dir, log_level=log_level)
+        download(source=source, limit=limit, config_dir=config_dir, log_level=log_level)
     else:
         logger.info("\n>>> STEP 1/5: Download SKIPPED")
 
     # Step 2: Resize
     logger.info("\n>>> STEP 2/5: Resolution filter + resize...")
-    resize(workers=16, config_dir=config_dir, log_level=log_level)
+    resize(config_dir=config_dir, log_level=log_level)
 
     # Step 3: Dedup
     logger.info("\n>>> STEP 3/5: Perceptual hash deduplication...")

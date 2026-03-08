@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from pathlib import Path
 
 from .base import ImageDownloader
@@ -10,11 +12,16 @@ from ..utils import IMAGE_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
+# Delay between search requests to avoid IP bans
+_QUERY_DELAY = 2.0
+
 
 class BingDownloader(ImageDownloader):
     """Download images using bing-image-downloader."""
 
     source_name = "bing"
+    _last_search_time: float = 0.0
+    _rate_lock = threading.Lock()
 
     def download(
         self,
@@ -32,6 +39,14 @@ class BingDownloader(ImageDownloader):
             return list(target_dir.iterdir())
 
         logger.info(f"[bing] Downloading up to {limit} images for '{query}'")
+
+        # Rate-limit: wait between searches (thread-safe)
+        with BingDownloader._rate_lock:
+            elapsed = time.time() - BingDownloader._last_search_time
+            if elapsed < _QUERY_DELAY:
+                time.sleep(_QUERY_DELAY - elapsed)
+            BingDownloader._last_search_time = time.time()
+
         try:
             # bing-image-downloader creates a subdirectory named after the query
             bing_dl.download(
