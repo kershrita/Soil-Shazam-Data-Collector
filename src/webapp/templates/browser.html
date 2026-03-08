@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}{{ step.name }} — Pipeline Validator{% endblock %}
+
+{% block content %}
+<!-- Step header -->
+<div class="step-header">
+  <div>
+    <h1><span class="step-num-inline">{{ step.icon }}</span> {{ step.name }}</h1>
+    <p class="subtitle">{{ step.desc }} &mdash; <strong>{{ "{:,}".format(stats.count) }}</strong> images</p>
+  </div>
+  <a href="/" class="btn btn-secondary">&larr; Dashboard</a>
+</div>
+
+{% if step.id == "filter" %}
+<!-- View toggle: Kept / Rejected -->
+<div class="view-toggle">
+  <a href="/step/filter?view=kept" class="toggle-btn {{ 'active' if view == 'kept' else '' }}">
+    Kept <span class="toggle-count">{{ "{:,}".format(stats.count) }}</span>
+  </a>
+  <a href="/step/filter?view=rejected" class="toggle-btn {{ 'active' if view == 'rejected' else '' }}">
+    Rejected <span class="toggle-count">{{ "{:,}".format(stats.rejected_count|default(0)) }}</span>
+  </a>
+</div>
+{% endif %}
+
+{% if step.id == "dedup" %}
+<!-- View toggle: Kept / Removed -->
+<div class="view-toggle">
+  <a href="/step/dedup?view=kept" class="toggle-btn {{ 'active' if view == 'kept' else '' }}">
+    Kept <span class="toggle-count">{{ "{:,}".format(stats.count) }}</span>
+  </a>
+  <a href="/step/dedup?view=removed" class="toggle-btn {{ 'active' if view == 'removed' else '' }}">
+    Removed duplicates <span class="toggle-count">{{ "{:,}".format(stats.removed_count|default(0)) }}</span>
+  </a>
+</div>
+{% endif %}
+
+<!-- Stats summary for this step -->
+{% if stats.distributions %}
+<div class="step-chart-wrap">
+  <canvas id="step-dist-chart"></canvas>
+</div>
+{% endif %}
+
+
+
+<!-- Filter bar -->
+<div class="filter-bar">
+  <input type="text" id="search-input" placeholder="Search filename..." class="search-input">
+  {% if step.id == "download" %}
+  <select id="filter-source" class="filter-select" data-category="source">
+    <option value="">All sources</option>
+    {% for src in stats.sources|default({}) %}
+    <option value="{{ src }}">{{ src }}</option>
+    {% endfor %}
+  </select>
+  <select id="filter-query" class="filter-select" data-category="query">
+    <option value="">All queries</option>
+    {% for q in stats.queries|default({}) %}
+    <option value="{{ q }}">{{ q.replace('_', ' ') }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
+  {% if step.id in ("filter", "dedup") and stats.source_list %}
+  <select id="filter-source" class="filter-select" data-category="source">
+    <option value="">All sources</option>
+    {% for src in stats.source_list %}
+    <option value="{{ src }}">{{ src }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
+  {% if step.id == "filter" and view == "rejected" %}
+  <select id="filter-reason" class="filter-select" data-category="reason">
+    <option value="">All reasons</option>
+    <option value="low_soil_score">Low soil score ({{ stats.rejection_reasons.low_soil_score|default(0) }})</option>
+    <option value="overlay">Overlay ({{ stats.rejection_reasons.overlay|default(0) }})</option>
+  </select>
+  {% endif %}
+  {% if step.has_labels and label_options %}
+    {% for cat in categories %}
+      {% if label_options.get(cat) %}
+      <select id="filter-{{ cat }}" class="filter-select" data-category="{{ cat }}">
+        <option value="">{{ cat.replace('_', ' ').title() }}</option>
+        {% for opt in label_options[cat] %}
+        <option value="{{ opt }}">{{ opt }}</option>
+        {% endfor %}
+      </select>
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+  <button id="btn-clear-filters" class="btn btn-small">Clear</button>
+</div>
+
+<!-- Image grid (loaded via JS) -->
+<div id="image-grid" class="image-grid"></div>
+
+<!-- Pagination -->
+<div id="pagination" class="pagination"></div>
+
+<!-- Image detail panel -->
+<div id="detail-overlay" class="detail-overlay hidden">
+  <div class="detail-panel">
+    <button id="detail-close" class="detail-close">&times;</button>
+    <div class="detail-content">
+      <div class="detail-image-wrap">
+        <img id="detail-img" src="" alt="">
+        <div id="detail-resize-compare"></div>
+      </div>
+      <div class="detail-info">
+        <h3 id="detail-filename"></h3>
+        <div id="detail-dimensions" class="detail-dimensions"></div>
+
+        <div id="detail-labels" class="detail-labels"></div>
+        <div id="detail-rejection" class="detail-rejection"></div>
+        <div id="detail-duplicates" class="detail-duplicates"></div>
+        <div id="detail-scores" class="detail-scores"></div>
+        <div id="detail-soil-scores" class="detail-soil-scores"></div>
+
+        {% if step.has_labels %}
+        <div class="detail-edit">
+          <h4>Correct Labels</h4>
+          <form id="correction-form" class="correction-form">
+            <input type="hidden" id="corr-image" name="image">
+            {% for cat in categories %}
+            <div class="form-row">
+              <label for="corr-{{ cat }}">{{ cat.replace('_', ' ').title() }}</label>
+              <select id="corr-{{ cat }}" name="{{ cat }}" class="corr-select">
+                <option value="">— keep —</option>
+                {% for opt in label_options_all.get(cat, []) %}
+                <option value="{{ opt }}">{{ opt }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {% endfor %}
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">Save Correction</button>
+              <button type="button" id="btn-revert" class="btn btn-danger">Revert</button>
+            </div>
+          </form>
+          <div id="corr-status" class="corr-status"></div>
+        </div>
+        {% endif %}
+
+        <!-- Navigation between images -->
+        <div class="detail-nav">
+          <button id="detail-prev" class="btn btn-small">&larr; Prev</button>
+          <button id="detail-next" class="btn btn-small">Next &rarr;</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.STEP_ID = {{ step.id | tojson }};
+  window.VIEW_MODE = {{ view | tojson }};
+  window.HAS_LABELS = {{ step.has_labels | tojson }};
+  window.CATEGORIES = {{ categories | tojson }};
+  window.DISTRIBUTIONS = {{ stats.distributions | tojson if stats.distributions else 'null' }};
+  window.REMOVED_DISTRIBUTIONS = {{ stats.removed_distributions | tojson if stats.removed_distributions else 'null' }};
+  window.initBrowser();
+  var _dc = document.getElementById('step-dist-chart');
+  if (_dc && window.DISTRIBUTIONS) window.renderDistributionChart(_dc, window.DISTRIBUTIONS, window.REMOVED_DISTRIBUTIONS);
+</script>
+{% endblock %}

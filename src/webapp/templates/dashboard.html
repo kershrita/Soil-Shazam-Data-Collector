@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Soil Pipeline{% endblock %}
+
+{% set chart_subtitles = {
+  'download': 'Images per source',
+  'filter':   'Kept vs. rejected — stacked by source',
+  'dedup':    'Kept vs. removed duplicates — stacked by source',
+  'label':    'Label distribution across 7 categories'
+} %}
+
+{% block content %}
+<h1>Pipeline Overview</h1>
+<p class="subtitle">Click any step to browse images and validate results.</p>
+
+<!-- Pipeline flow -->
+<div class="pipeline-flow">
+  {% for s in steps %}
+  <a href="/step/{{ s.id }}" class="step-card {{ 'has-data' if s.stats.count > 0 else 'empty' }}">
+    <div class="step-num">{{ s.icon }}</div>
+    <div class="step-name">{{ s.name }}</div>
+    <div class="step-count">{{ "{:,}".format(s.stats.count) }}</div>
+    <div class="step-desc">{{ s.desc }}</div>
+  </a>
+  {% if not loop.last %}
+  <div class="step-arrow">&#10132;</div>
+  {% endif %}
+  {% endfor %}
+</div>
+
+<!-- Per-step detail cards -->
+<div class="stats-grid">
+  {% for s in steps if s.id != "resize" %}
+  <div class="stats-card">
+    <div class="stats-card-header">
+      <h3>{{ s.name }}</h3>
+      <span class="stats-card-count">{{ "{:,}".format(s.stats.count) }} images</span>
+    </div>
+    {% if s.id in chart_subtitles %}
+    <p class="chart-subtitle">{{ chart_subtitles[s.id] }}</p>
+    {% endif %}
+    <div class="stats-body">
+      {% if s.stats.distributions %}
+      <div class="stat-chart-wrap">
+        <canvas class="dist-chart-canvas" data-step="{{ s.id }}"></canvas>
+      </div>
+      {% endif %}
+    </div>
+    <a href="/step/{{ s.id }}" class="stats-card-link">Browse &rarr;</a>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var DATA = {};
+  var REMOVED = {};
+  {% for s in steps %}
+  {% if s.stats.distributions %}
+  DATA[{{ s.id | tojson }}] = {{ s.stats.distributions | tojson }};
+  {% endif %}
+  {% if s.stats.removed_distributions %}
+  REMOVED[{{ s.id | tojson }}] = {{ s.stats.removed_distributions | tojson }};
+  {% endif %}
+  {% endfor %}
+  document.querySelectorAll('.dist-chart-canvas').forEach(function (canvas) {
+    var stepId = canvas.dataset.step;
+    if (DATA[stepId]) window.renderDistributionChart(canvas, DATA[stepId], REMOVED[stepId] || null);
+  });
+}());
+</script>
+{% endblock %}
