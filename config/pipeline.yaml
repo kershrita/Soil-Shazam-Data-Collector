@@ -16,23 +16,18 @@ clip:
 
 # --- Filter thresholds ---
 filter:
-  soil_threshold: 0.30          # Minimum CLIP similarity to soil prompts to keep
-  watermark_margin: 0.07        # Discard if watermark_score - clean_score > this
+  soil_threshold: 0.24          # Minimum CLIP similarity to soil prompts to keep
+  overlay_margin: 0.02          # Discard if overlay_score - clean_score > this (watermark/text)
 
 # --- Download settings ---
 download:
   limit_per_query_per_source: 200   # Max images per query per source
-  timeout: 30                       # HTTP timeout in seconds
-  max_retries: 3                    # Retry failed downloads
+  timeout: 15                       # HTTP timeout in seconds
+  max_retries: 4                    # Retry failed downloads
 
 # --- Deduplication settings ---
 dedup:
   phash_threshold: 10            # Max hamming distance for perceptual hash (0=identical, lower=stricter)
-  clip_cosine_threshold: 0.97    # Min cosine similarity to consider as CLIP duplicate (higher=stricter)
-
-# --- Verification ---
-verification:
-  sample_fraction: 0.05          # Fraction of dataset to sample for manual review (7%)
 
 # --- Output paths ---
 paths:

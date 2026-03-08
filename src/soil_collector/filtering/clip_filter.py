@@ -23,23 +23,23 @@ def run_clip_filter(
     positive_prompts: list[str],
     negative_prompts: list[str],
     threshold: float = 0.30,
-    watermarked_stems: set[str] | None = None,
+    flagged_stems: set[str] | None = None,
 ) -> dict:
     """Filter images using CLIP — keep only soil-related images.
 
     Uses positive soil prompts vs negative prompts. Keeps images where
     avg positive similarity > threshold and positive > negative.
 
-    Also removes any images flagged in watermarked_stems.
+    Also removes any images flagged by overlay filter (watermark/text).
 
     Returns stats dict.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     image_paths = collect_image_paths(input_dir)
-    watermarked_stems = watermarked_stems or set()
+    flagged_stems = flagged_stems or set()
 
     stats = {"total": len(image_paths), "kept": 0, "discarded_soil": 0,
-             "discarded_watermark": 0, "errors": 0}
+             "discarded_overlay": 0, "errors": 0}
 
     if not image_paths:
         return stats
@@ -64,10 +64,10 @@ def run_clip_filter(
             images = []
             valid_paths = []
             for p in batch_paths:
-                # Skip watermarked
-                if p.stem in watermarked_stems:
-                    stats["discarded_watermark"] += 1
-                    writer.writerow([p.name, "N/A", "N/A", "watermarked"])
+                # Skip overlay-flagged (watermark/text)
+                if p.stem in flagged_stems:
+                    stats["discarded_overlay"] += 1
+                    writer.writerow([p.name, "N/A", "N/A", "overlay"])
                     continue
                 # Skip already processed
                 if p.stem in existing:
@@ -105,7 +105,7 @@ def run_clip_filter(
     logger.info(
         f"CLIP filter done: {stats['kept']} kept, "
         f"{stats['discarded_soil']} discarded (not soil), "
-        f"{stats['discarded_watermark']} discarded (watermark), "
+        f"{stats['discarded_overlay']} discarded (overlay), "
         f"{stats['errors']} errors"
     )
     return stats

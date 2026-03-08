@@ -23,6 +23,9 @@ def load_image(path: Path) -> Image.Image | None:
     try:
         img = Image.open(path)
         img.load()  # Force full load to catch truncated files
+        # Palette images with transparency must go through RGBA to avoid PIL warning
+        if img.mode == "P" and "transparency" in img.info:
+            img = img.convert("RGBA")
         return img.convert("RGB")
     except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as e:
         logger.debug(f"Failed to load image {path}: {e}")

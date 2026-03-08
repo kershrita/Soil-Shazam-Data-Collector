@@ -58,10 +58,14 @@ def _resolve_path(cfg_path: str) -> Path:
 def download(
     source: str = typer.Option("all", help="Source: bing, google, flickr, or all"),
     limit: int = typer.Option(0, help="Max images per query per source (0 = use config default)"),
+    workers: int = typer.Option(4, help="Parallel query workers per source"),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
-    """Download soil images from internet sources."""
+    """Download soil images from internet sources (parallel)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     setup_logging(log_level)
     logger = logging.getLogger(__name__)
 
@@ -71,8 +75,6 @@ def download(
     per_query_limit = limit if limit > 0 else dl_cfg["limit_per_query_per_source"]
     timeout = dl_cfg.get("timeout", 30)
     raw_dir = _resolve_path(cfg["paths"]["raw"])
-
-    logger.info(f"Downloading images: {len(queries)} queries, limit={per_query_limit}/query/source")
 
     # Build downloaders
     from soil_collector.downloader.bing import BingDownloader
@@ -87,13 +89,51 @@ def download(
     if source in ("all", "flickr"):
         downloaders.append(FlickrDownloader())
 
-    total = 0
-    for dl in downloaders:
-        for query in queries:
-            paths = dl.download(query, per_query_limit, raw_dir, timeout)
-            total += len(paths)
+    logger.info(
+        f"Downloading images: {len(queries)} queries × {len(downloaders)} sources, "
+        f"limit={per_query_limit}/query/source, workers={workers}/source"
+    )
 
-    logger.info(f"Download complete: {total} total images in {raw_dir}")
+    # Thread-safe counter
+    _lock = threading.Lock()
+    totals: dict[str, int] = {}
+
+    def _run_source(dl):
+        """Run all queries for one source using a thread pool."""
+        source_name = dl.source_name
+        source_total = 0
+
+        def _download_query(query: str) -> int:
+            paths = dl.download(query, per_query_limit, raw_dir, timeout)
+            return len(paths)
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=source_name) as pool:
+            futures = {pool.submit(_download_query, q): q for q in queries}
+            for future in as_completed(futures):
+                try:
+                    count = future.result()
+                    source_total += count
+                except Exception as e:
+                    query = futures[future]
+                    logger.error(f"[{source_name}] Query '{query}' failed: {e}")
+
+        with _lock:
+            totals[source_name] = source_total
+        logger.info(f"[{source_name}] Source complete: {source_total} images")
+
+    # Run all sources in parallel (each source gets its own thread)
+    source_threads = []
+    for dl in downloaders:
+        t = threading.Thread(target=_run_source, args=(dl,), name=f"source-{dl.source_name}")
+        t.start()
+        source_threads.append(t)
+
+    for t in source_threads:
+        t.join()
+
+    grand_total = sum(totals.values())
+    breakdown = ", ".join(f"{k}={v}" for k, v in totals.items())
+    logger.info(f"Download complete: {grand_total} total images ({breakdown}) in {raw_dir}")
 
 
 # ─── RESIZE ──────────────────────────────────────────────────────────────────
@@ -101,6 +141,7 @@ def download(
 
 @app.command()
 def resize(
+    workers: int = typer.Option(16, help="Parallel processing workers"),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
@@ -120,6 +161,7 @@ def resize(
         min_shortest_side=res_cfg["min_shortest_side"],
         max_longest_side=res_cfg["max_longest_side"],
         jpeg_quality=res_cfg["jpeg_quality"],
+        workers=workers,
     )
 
 
@@ -140,7 +182,7 @@ def filter(
     filter_cfg = cfg["filter"]
     clip_cfg = cfg["clip"]
 
-    resized_dir = _resolve_path(cfg["paths"]["resized"])
+    deduped_dir = _resolve_path(cfg["paths"]["deduped"])
     filtered_dir = _resolve_path(cfg["paths"]["filtered"])
     logs_dir = _resolve_path(cfg["paths"]["logs"])
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -157,30 +199,30 @@ def filter(
         batch_size=clip_cfg["batch_size"],
     )
 
-    # Stage 1: Watermark detection
-    from soil_collector.filtering.watermark import run_watermark_filter
+    # Stage 1: Overlay detection (watermarks + text)
+    from soil_collector.filtering.overlay_filter import run_overlay_filter
 
-    watermarked = run_watermark_filter(
-        input_dir=resized_dir,
-        log_path=logs_dir / "watermark_filter.csv",
+    overlay_stems = run_overlay_filter(
+        input_dir=deduped_dir,
+        log_path=logs_dir / "overlay_filter.csv",
         clip_model=clip_model,
-        watermark_prompts=prompts["filter_watermark"]["watermark"],
-        clean_prompts=prompts["filter_watermark"]["clean"],
-        margin=filter_cfg["watermark_margin"],
+        overlay_prompts=prompts["filter_overlay"]["overlay"],
+        clean_prompts=prompts["filter_overlay"]["clean"],
+        overlay_margin=filter_cfg["overlay_margin"],
     )
 
     # Stage 2: Soil filtering
     from soil_collector.filtering.clip_filter import run_clip_filter
 
     run_clip_filter(
-        input_dir=resized_dir,
+        input_dir=deduped_dir,
         output_dir=filtered_dir,
         log_path=logs_dir / "soil_filter.csv",
         clip_model=clip_model,
         positive_prompts=prompts["filter_soil"]["positive"],
         negative_prompts=prompts["filter_soil"]["negative"],
         threshold=soil_threshold,
-        watermarked_stems=watermarked,
+        flagged_stems=overlay_stems,
     )
 
 
@@ -229,62 +271,22 @@ def dedup(
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
-    """Deduplicate images: perceptual hashing → CLIP embeddings."""
+    """Deduplicate images using perceptual hashing."""
     setup_logging(log_level)
 
     cfg = _get_config(config_dir)
-    clip_cfg = cfg["clip"]
     dedup_cfg = cfg["dedup"]
 
-    labeled_dir = _resolve_path(cfg["paths"]["labeled"])
+    resized_dir = _resolve_path(cfg["paths"]["resized"])
     deduped_dir = _resolve_path(cfg["paths"]["deduped"])
-
-    from soil_collector.utils.clip_model import get_clip_model
-
-    clip_model = get_clip_model(
-        model_name=clip_cfg["model_name"],
-        pretrained=clip_cfg["pretrained"],
-        device=clip_cfg["device"],
-        batch_size=clip_cfg["batch_size"],
-    )
 
     from soil_collector.dedup.deduplicator import run_deduplication
 
     run_deduplication(
-        input_dir=labeled_dir,
-        labels_path=labeled_dir / "labels.json",
+        input_dir=resized_dir,
         output_dir=deduped_dir,
-        clip_model=clip_model,
         phash_threshold=dedup_cfg["phash_threshold"],
-        clip_cosine_threshold=dedup_cfg["clip_cosine_threshold"],
     )
-
-
-# ─── VERIFY ──────────────────────────────────────────────────────────────────
-
-
-@app.command()
-def verify(
-    config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
-    log_level: str = typer.Option("INFO", help="Logging level"),
-):
-    """Generate verification report for manual review of a random sample."""
-    setup_logging(log_level)
-
-    cfg = _get_config(config_dir)
-    deduped_dir = _resolve_path(cfg["paths"]["deduped"])
-    dataset_dir = _resolve_path(cfg["paths"]["dataset"])
-    sample_frac = cfg["verification"]["sample_fraction"]
-
-    from soil_collector.verification.sampler import run_verification_sampling
-
-    report_path = run_verification_sampling(
-        input_dir=deduped_dir,
-        output_dir=dataset_dir / "verification",
-        sample_fraction=sample_frac,
-    )
-    typer.echo(f"Verification report: {report_path}")
-    typer.echo("Edit corrections.json to fix mislabeled entries, then run 'export'.")
 
 
 # ─── EXPORT ──────────────────────────────────────────────────────────────────
@@ -299,14 +301,14 @@ def export(
     setup_logging(log_level)
 
     cfg = _get_config(config_dir)
-    deduped_dir = _resolve_path(cfg["paths"]["deduped"])
+    labeled_dir = _resolve_path(cfg["paths"]["labeled"])
     dataset_dir = _resolve_path(cfg["paths"]["dataset"])
     corrections_path = dataset_dir / "verification" / "corrections.json"
 
     from soil_collector.export.dataset import run_export
 
     run_export(
-        input_dir=deduped_dir,
+        input_dir=labeled_dir,
         corrections_path=corrections_path if corrections_path.exists() else None,
         output_dir=dataset_dir,
     )
@@ -321,7 +323,6 @@ def run_all(
     limit: int = typer.Option(0, help="Max images per query per source (0 = use config)"),
     threshold: float = typer.Option(0, help="Soil filter threshold (0 = use config)"),
     skip_download: bool = typer.Option(False, help="Skip download step (use existing raw images)"),
-    skip_verify: bool = typer.Option(False, help="Skip verification step"),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
@@ -335,39 +336,48 @@ def run_all(
 
     # Step 1: Download
     if not skip_download:
-        logger.info("\n>>> STEP 1/6: Downloading images...")
-        download(source=source, limit=limit, config_dir=config_dir, log_level=log_level)
+        logger.info("\n>>> STEP 1/5: Downloading images...")
+        download(source=source, limit=limit, workers=4, config_dir=config_dir, log_level=log_level)
     else:
-        logger.info("\n>>> STEP 1/6: Download SKIPPED")
+        logger.info("\n>>> STEP 1/5: Download SKIPPED")
 
     # Step 2: Resize
-    logger.info("\n>>> STEP 2/6: Resolution filter + resize...")
-    resize(config_dir=config_dir, log_level=log_level)
+    logger.info("\n>>> STEP 2/5: Resolution filter + resize...")
+    resize(workers=16, config_dir=config_dir, log_level=log_level)
 
-    # Step 3: Filter
-    logger.info("\n>>> STEP 3/6: Watermark + soil filtering...")
-    filter(threshold=threshold, config_dir=config_dir, log_level=log_level)
-
-    # Step 4: Label
-    logger.info("\n>>> STEP 4/6: CLIP feature labeling...")
-    label(config_dir=config_dir, log_level=log_level)
-
-    # Step 5: Dedup
-    logger.info("\n>>> STEP 5/6: Two-stage deduplication...")
+    # Step 3: Dedup
+    logger.info("\n>>> STEP 3/5: Perceptual hash deduplication...")
     dedup(config_dir=config_dir, log_level=log_level)
 
-    # Step 6: Export (optionally with verify)
-    if not skip_verify:
-        logger.info("\n>>> STEP 6/6: Verification + export...")
-        verify(config_dir=config_dir, log_level=log_level)
-    else:
-        logger.info("\n>>> STEP 6/6: Export (skipping verification)...")
+    # Step 4: Filter
+    logger.info("\n>>> STEP 4/5: Overlay + soil filtering...")
+    filter(threshold=threshold, config_dir=config_dir, log_level=log_level)
 
+    # Step 5: Label + Export
+    logger.info("\n>>> STEP 5/5: CLIP feature labeling + export...")
+    label(config_dir=config_dir, log_level=log_level)
     export(config_dir=config_dir, log_level=log_level)
 
     logger.info("\n" + "=" * 60)
     logger.info("PIPELINE COMPLETE")
     logger.info("=" * 60)
+
+
+# ─── VALIDATE (web UI) ──────────────────────────────────────────────────────
+
+
+@app.command()
+def webapp(
+    port: int = typer.Option(5000, help="Port to run the validation server on"),
+    host: str = typer.Option("127.0.0.1", help="Host to bind to"),
+    config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
+):
+    """Launch the validation web UI to browse and correct pipeline outputs."""
+    from soil_collector.webapp.app import create_app
+
+    web_app = create_app(config_dir=config_dir)
+    typer.echo(f"Starting validation UI at http://{host}:{port}")
+    web_app.run(host=host, port=port, debug=True)
 
 
 if __name__ == "__main__":

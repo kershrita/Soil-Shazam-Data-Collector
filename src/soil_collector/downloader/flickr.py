@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -35,6 +36,7 @@ class FlickrDownloader(ImageDownloader):
 
     source_name = "flickr"
     _last_search_time: float = 0.0
+    _rate_lock = threading.Lock()
 
     def download(
         self,
@@ -51,13 +53,14 @@ class FlickrDownloader(ImageDownloader):
 
         logger.info(f"[flickr] Downloading up to {limit} images for '{query}'")
 
-        # Rate-limit: wait between searches
-        elapsed = time.time() - FlickrDownloader._last_search_time
-        if elapsed < _QUERY_DELAY:
-            time.sleep(_QUERY_DELAY - elapsed)
+        # Rate-limit: wait between searches (thread-safe)
+        with FlickrDownloader._rate_lock:
+            elapsed = time.time() - FlickrDownloader._last_search_time
+            if elapsed < _QUERY_DELAY:
+                time.sleep(_QUERY_DELAY - elapsed)
+            FlickrDownloader._last_search_time = time.time()
 
         image_urls = self._search_images(query, limit, timeout)
-        FlickrDownloader._last_search_time = time.time()
 
         downloaded: list[Path] = []
         session = requests.Session()

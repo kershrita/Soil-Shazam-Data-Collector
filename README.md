@@ -9,15 +9,13 @@ Internet Images (Bing + Google + DuckDuckGo)
         ↓
   Mass Download (30k–50k images)
         ↓
-  Resolution Filter (discard <512px, resize >1024px)
+  Resolution Filter (discard <384px, resize >1024px)
         ↓
-  Watermark Detection (CLIP-based)
+  Deduplication (perceptual hashing)
         ↓
-  Soil Filtering (CLIP similarity > 0.30)
+  Overlay + Soil Filtering (CLIP-based watermark/text + soil detection)
         ↓
   Auto-Labeling (7 features via CLIP)
-        ↓
-  Deduplication (PHash → CLIP embeddings)
         ↓
   Manual Verification (5-10% sample)
         ↓
@@ -51,9 +49,9 @@ soil-collector run-all --limit 500
 # Run individual steps
 soil-collector download --source all --limit 500
 soil-collector resize
+soil-collector dedup
 soil-collector filter
 soil-collector label
-soil-collector dedup
 soil-collector verify
 soil-collector export
 ```
@@ -75,13 +73,13 @@ resolution:
   jpeg_quality: 95          # Output JPEG quality
 
 filter:
-  soil_threshold: 0.30      # CLIP similarity cutoff for soil detection
-  watermark_margin: 0.05    # Watermark vs clean score margin
+  soil_threshold: 0.22      # CLIP similarity cutoff for soil detection
+  overlay_margin: 0.07      # Overlay vs clean score margin (watermark/text)
 
 clip:
-  model_name: "ViT-B-32"   # Can upgrade to "ViT-L-14" for better accuracy
+  model_name: "ViT-L-14"   # Can downgrade to "ViT-B-32" for lower VRAM
   device: "cuda"            # Uses GPU, falls back to CPU
-  batch_size: 64            # Tune based on VRAM (64 is fine for 16GB)
+  batch_size: 128           # Tune based on VRAM (128 is fine for 16GB)
 ```
 
 ## Requirements
