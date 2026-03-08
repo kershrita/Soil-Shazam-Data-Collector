@@ -1,0 +1,106 @@
+# Search queries for soil image collection.
+# Each source will use these queries. Organized by category for balanced coverage.
+# Add or remove queries to adjust dataset coverage.
+
+queries:
+  # ── General Soil Texture (Base Dataset) ──
+  - "soil surface texture close-up"
+  - "soil ground texture macro"
+  - "earth soil texture close-up"
+  - "bare soil surface texture"
+  - "topsoil macro texture"
+  - "soil macro photography texture"
+  - "natural soil ground close-up"
+  - "soil surface macro photography"
+  - "soil ground detail texture"
+  - "bare earth ground close-up"
+  - "soil texture high detail"
+  - "soil surface pattern close-up"
+
+  # ── Soil Color Diversity ──
+  - "brown soil texture close-up"
+  - "dark soil macro texture"
+  - "black soil surface close-up"
+  - "gray soil ground texture macro"
+  - "red clay soil texture close-up"
+  - "yellow soil texture close-up"
+  - "white sandy soil texture"
+  - "light brown soil surface macro"
+  - "iron rich red soil close-up"
+  - "pale sandy soil ground texture"
+  - "dark organic soil macro texture"
+  - "gray silty soil surface close-up"
+
+  # ── Soil Texture Types ──
+  - "loamy soil texture close-up"
+  - "silty soil surface texture"
+  - "clay soil macro texture"
+  - "sandy soil texture close-up"
+  - "gravel soil ground texture"
+  - "mixed soil texture macro"
+  - "agricultural loam soil close-up"
+  - "fine silty soil texture"
+  - "clay rich soil surface macro"
+  - "coarse sandy soil texture close-up"
+  - "granular soil texture macro"
+  - "crumb soil structure close-up"
+
+  # ── Particle Size / Soil Grains ──
+  - "coarse soil grains close-up"
+  - "fine soil particles macro"
+  - "medium grain soil texture"
+  - "coarse sand soil macro texture"
+  - "fine clay soil particles close-up"
+  - "soil particle macro photography"
+  - "granular soil grains texture"
+  - "soil grains extreme close-up"
+  - "soil sand grains macro"
+  - "fine powder soil texture close-up"
+
+  # ── Soil Cracks / Dry Soil ──
+  - "dry cracked soil surface close-up"
+  - "clay soil cracks macro"
+  - "soil surface fissures close-up"
+  - "desert cracked ground texture"
+  - "dried mud cracks close-up"
+  - "parched soil crack pattern"
+  - "dry clay soil fracture texture"
+  - "deep cracked soil ground macro"
+  - "sun dried soil cracks texture"
+  - "dry mud ground surface macro"
+
+  # ── Rock Fraction / Gravel ──
+  - "rocky soil surface close-up"
+  - "gravel mixed soil texture"
+  - "soil with small stones close-up"
+  - "rock fragments in soil texture"
+  - "stony soil ground macro texture"
+  - "pebbles in soil macro photography"
+  - "soil gravel mix surface"
+  - "coarse rocky soil texture close-up"
+  - "soil with gravel particles macro"
+  - "stone fragments soil texture"
+
+  # ── Soil Structure ──
+  - "compacted soil surface close-up"
+  - "loose soil texture macro"
+  - "soil aggregates structure close-up"
+  - "crumb soil structure macro"
+  - "soil clods texture close-up"
+  - "granular soil aggregates macro"
+  - "compact clay soil surface"
+  - "loose sandy soil macro texture"
+  - "soil aggregate clusters close-up"
+  - "dense compact soil ground texture"
+
+  # ── Surface Roughness ──
+  - "rough soil surface texture close-up"
+  - "smooth soil surface macro"
+  - "uneven soil ground texture"
+  - "coarse rough soil macro"
+  - "flat soil surface close-up"
+  - "bumpy soil texture macro"
+  - "irregular soil ground texture"
+  - "rough dry soil surface close-up"
+  - "smooth compact soil macro"
+  - "uneven rocky soil surface"

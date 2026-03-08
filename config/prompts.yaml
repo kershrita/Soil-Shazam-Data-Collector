@@ -1,0 +1,74 @@
+# CLIP prompts for filtering and labeling.
+# Each category has a list of (label, prompt) pairs.
+# The label with the highest CLIP similarity score wins.
+
+# --- Filtering prompts ---
+
+filter_soil:
+  positive:
+    - "a close-up photo of soil ground texture"
+    - "a macro photo of earth soil surface"
+    - "bare soil ground texture photograph"
+  negative:
+    - "a photo of a person"
+    - "a photo of a tractor on a farm"
+    - "a landscape photo with sky and trees"
+    - "a photo of green plants and leaves"
+    - "a screenshot of a website"
+    - "a diagram or chart"
+    - "a photo of food"
+
+filter_watermark:
+  watermark:
+    - "image with watermark"
+    - "image with logo overlay"
+    - "photo with text overlay"
+    - "stock photo with watermark"
+  clean:
+    - "clean photograph without watermark or text"
+    - "natural photo without logo"
+
+# --- Labeling prompts ---
+# For each category, highest-scoring label is assigned.
+
+labeling:
+  soil_color:
+    red: "red soil texture, reddish earth surface"
+    yellow: "yellow soil texture, yellowish earth surface"
+    dark: "dark soil texture, black earth surface"
+    brown: "brown soil texture, brown earth surface"
+    gray: "gray soil texture, grayish earth surface"
+    white: "white chalky soil texture, pale earth surface"
+
+  soil_texture:
+    sandy: "sandy soil texture, loose sand grains"
+    clay: "clay soil texture, smooth dense clay"
+    silty: "silty soil texture, fine silt particles"
+    loamy: "loamy soil texture, mixed organic soil"
+    gravel: "gravel soil texture, coarse stones and pebbles"
+
+  particle_size:
+    fine: "fine grain soil, very small soil particles"
+    medium: "medium grain soil, moderate size particles"
+    coarse: "coarse grain soil, large soil particles and chunks"
+
+  crack_presence:
+    high: "soil surface with deep cracks, dry cracked earth"
+    moderate: "soil with some small cracks and fissures"
+    none: "smooth soil surface without cracks"
+
+  rock_fraction:
+    high: "soil with many large rocks and boulders"
+    medium: "rocky soil surface with scattered gravel and stones"
+    low: "soil with a few scattered small stones"
+    none: "fine soil surface without any rocks or stones"
+
+  surface_structure:
+    compact: "compact dense soil surface, hard packed earth"
+    loose: "loose crumbly soil, soft friable earth"
+    aggregated: "aggregated clumpy soil, soil with visible clumps and peds"
+
+  surface_roughness:
+    rough: "rough coarse soil texture, uneven bumpy surface"
+    moderate: "moderately rough soil surface, some texture variation"
+    smooth: "smooth flat soil surface, even and uniform"

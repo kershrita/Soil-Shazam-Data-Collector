@@ -1,0 +1,45 @@
+# Pipeline configuration — thresholds, resolution, batch sizes, paths.
+
+# --- Resolution settings ---
+resolution:
+  min_shortest_side: 384       # Discard images with shortest side < this
+  max_longest_side: 1024       # Resize images with any side > this
+  resize_mode: "shortest_side" # Resize shortest side to max_longest_side, keep aspect ratio
+  jpeg_quality: 95             # Output JPEG quality (1-100)
+
+# --- CLIP model settings ---
+clip:
+  model_name: "ViT-L-14"                # OpenCLIP model architecture
+  pretrained: "laion2b_s32b_b82k"       # Pretrained weights
+  device: "cuda"                        # "cuda" or "cpu"
+  batch_size: 128                       # Images per batch for CLIP inference
+
+# --- Filter thresholds ---
+filter:
+  soil_threshold: 0.30          # Minimum CLIP similarity to soil prompts to keep
+  watermark_margin: 0.07        # Discard if watermark_score - clean_score > this
+
+# --- Download settings ---
+download:
+  limit_per_query_per_source: 200   # Max images per query per source
+  timeout: 30                       # HTTP timeout in seconds
+  max_retries: 3                    # Retry failed downloads
+
+# --- Deduplication settings ---
+dedup:
+  phash_threshold: 10            # Max hamming distance for perceptual hash (0=identical, lower=stricter)
+  clip_cosine_threshold: 0.97    # Min cosine similarity to consider as CLIP duplicate (higher=stricter)
+
+# --- Verification ---
+verification:
+  sample_fraction: 0.05          # Fraction of dataset to sample for manual review (7%)
+
+# --- Output paths ---
+paths:
+  raw: "data/raw"
+  resized: "data/resized"
+  filtered: "data/filtered"
+  labeled: "data/labeled"
+  deduped: "data/deduped"
+  dataset: "data/dataset"
+  logs: "data/logs"
