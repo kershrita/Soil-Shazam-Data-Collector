@@ -14,8 +14,7 @@ from pathlib import Path
 
 import requests
 
-from soil_collector.downloader.base import ImageDownloader
-from soil_collector.utils.image_utils import IMAGE_EXTENSIONS
+from .base import ImageDownloader
 
 logger = logging.getLogger(__name__)
 

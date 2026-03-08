@@ -9,8 +9,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from soil_collector.utils.clip_model import CLIPModel
-from soil_collector.utils.image_utils import collect_image_paths, load_image
+from ..utils import CLIPModel, collect_image_paths, load_image
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +18,7 @@ def run_clip_labeling(
     input_dir: Path,
     output_dir: Path,
     clip_model: CLIPModel,
-    label_prompts: dict[str, dict[str, str]],
+    label_prompts: dict[str, dict[str, list[str] | str]],
 ) -> list[dict]:
     """Label filtered soil images using CLIP similarity scoring.
 
@@ -27,7 +26,9 @@ def run_clip_labeling(
         input_dir: Directory with filtered soil images.
         output_dir: Directory to copy images and save labels.
         clip_model: Loaded CLIPModel instance.
-        label_prompts: Nested dict — {category: {label: prompt_text}}.
+        label_prompts: Nested dict — {category: {label: prompt_or_list}}.
+            Each label may map to a single prompt string or a list of prompts.
+            When a list is given, scores are averaged across prompts (ensemble).
 
     Returns:
         List of label dicts, one per image.
@@ -43,15 +44,20 @@ def run_clip_labeling(
 
     logger.info(f"CLIP labeling: processing {len(image_paths)} images across {len(label_prompts)} categories")
 
-    # Pre-encode all prompts per category
+    # Pre-encode all prompts per category.
+    # Each label may have a list of prompts; scores are averaged across them (ensemble).
     category_data: dict[str, dict] = {}
     for category, labels_dict in label_prompts.items():
-        label_names = list(labels_dict.keys())
-        prompts = list(labels_dict.values())
-        text_features = clip_model.encode_texts(prompts)
+        label_names = []
+        features_per_label = []
+        for label_name, prompts in labels_dict.items():
+            if isinstance(prompts, str):
+                prompts = [prompts]
+            label_names.append(label_name)
+            features_per_label.append(clip_model.encode_texts(prompts))  # (n_prompts, dim)
         category_data[category] = {
             "labels": label_names,
-            "features": text_features,
+            "features_per_label": features_per_label,
         }
 
     # Load existing labels for resume
@@ -93,11 +99,11 @@ def run_clip_labeling(
             img_feat = img_features[idx : idx + 1]  # (1, embed_dim)
 
             for category, cdata in category_data.items():
-                similarities = (img_feat @ cdata["features"].T).squeeze(0)
-                scores = {
-                    label: round(sim.item(), 4)
-                    for label, sim in zip(cdata["labels"], similarities)
-                }
+                scores = {}
+                for label, label_feats in zip(cdata["labels"], cdata["features_per_label"]):
+                    # Ensemble: average similarity across all prompts for this label
+                    sim = (img_feat @ label_feats.T).mean().item()
+                    scores[label] = round(sim, 4)
                 # Sort by score descending
                 sorted_labels = sorted(scores.items(), key=lambda x: x[1], reverse=True)
                 best_label = sorted_labels[0][0]

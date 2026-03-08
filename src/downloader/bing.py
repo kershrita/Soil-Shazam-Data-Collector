@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from soil_collector.downloader.base import ImageDownloader, slugify
-from soil_collector.utils.image_utils import IMAGE_EXTENSIONS
+from .base import ImageDownloader
+from ..utils import IMAGE_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 

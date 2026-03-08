@@ -9,7 +9,7 @@ from typing import Optional
 import typer
 import yaml
 
-from soil_collector.utils.logging import setup_logging
+from .utils import setup_logging
 
 app = typer.Typer(
     name="soil-collector",
@@ -19,7 +19,7 @@ app = typer.Typer(
 
 # Root of project — locate config relative to this file
 _PKG_ROOT = Path(__file__).resolve().parent
-_PROJECT_ROOT = _PKG_ROOT.parent.parent  # src/../..
+_PROJECT_ROOT = _PKG_ROOT.parent  # src → project root
 
 
 def _load_yaml(path: Path) -> dict:
@@ -77,9 +77,7 @@ def download(
     raw_dir = _resolve_path(cfg["paths"]["raw"])
 
     # Build downloaders
-    from soil_collector.downloader.bing import BingDownloader
-    from soil_collector.downloader.flickr import FlickrDownloader
-    from soil_collector.downloader.google import GoogleDownloader
+    from .downloader import BingDownloader, FlickrDownloader, GoogleDownloader
 
     downloaders = []
     if source in ("all", "bing"):
@@ -153,7 +151,7 @@ def resize(
     raw_dir = _resolve_path(cfg["paths"]["raw"])
     resized_dir = _resolve_path(cfg["paths"]["resized"])
 
-    from soil_collector.filtering.resolution import run_resolution_filter
+    from .filtering import run_resolution_filter
 
     run_resolution_filter(
         input_dir=raw_dir,
@@ -190,7 +188,7 @@ def filter(
     soil_threshold = threshold if threshold > 0 else filter_cfg["soil_threshold"]
 
     # Load CLIP model
-    from soil_collector.utils.clip_model import get_clip_model
+    from .utils import get_clip_model
 
     clip_model = get_clip_model(
         model_name=clip_cfg["model_name"],
@@ -200,7 +198,7 @@ def filter(
     )
 
     # Stage 1: Overlay detection (watermarks + text)
-    from soil_collector.filtering.overlay_filter import run_overlay_filter
+    from .filtering import run_overlay_filter
 
     overlay_stems = run_overlay_filter(
         input_dir=deduped_dir,
@@ -212,7 +210,7 @@ def filter(
     )
 
     # Stage 2: Soil filtering
-    from soil_collector.filtering.clip_filter import run_clip_filter
+    from .filtering import run_clip_filter
 
     run_clip_filter(
         input_dir=deduped_dir,
@@ -244,7 +242,7 @@ def label(
     filtered_dir = _resolve_path(cfg["paths"]["filtered"])
     labeled_dir = _resolve_path(cfg["paths"]["labeled"])
 
-    from soil_collector.utils.clip_model import get_clip_model
+    from .utils import get_clip_model
 
     clip_model = get_clip_model(
         model_name=clip_cfg["model_name"],
@@ -253,7 +251,7 @@ def label(
         batch_size=clip_cfg["batch_size"],
     )
 
-    from soil_collector.labeling.clip_labeler import run_clip_labeling
+    from .labeling import run_clip_labeling
 
     run_clip_labeling(
         input_dir=filtered_dir,
@@ -280,7 +278,7 @@ def dedup(
     resized_dir = _resolve_path(cfg["paths"]["resized"])
     deduped_dir = _resolve_path(cfg["paths"]["deduped"])
 
-    from soil_collector.dedup.deduplicator import run_deduplication
+    from .dedup import run_deduplication
 
     run_deduplication(
         input_dir=resized_dir,
@@ -305,7 +303,7 @@ def export(
     dataset_dir = _resolve_path(cfg["paths"]["dataset"])
     corrections_path = dataset_dir / "verification" / "corrections.json"
 
-    from soil_collector.export.dataset import run_export
+    from .export import run_export
 
     run_export(
         input_dir=labeled_dir,
@@ -373,7 +371,7 @@ def webapp(
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
 ):
     """Launch the validation web UI to browse and correct pipeline outputs."""
-    from soil_collector.webapp.app import create_app
+    from .webapp import create_app
 
     web_app = create_app(config_dir=config_dir)
     typer.echo(f"Starting validation UI at http://{host}:{port}")

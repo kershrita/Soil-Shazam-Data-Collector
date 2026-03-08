@@ -8,8 +8,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from soil_collector.utils.clip_model import CLIPModel
-from soil_collector.utils.image_utils import collect_image_paths, load_image
+from ..utils import CLIPModel, collect_image_paths, load_image
 
 logger = logging.getLogger(__name__)
 

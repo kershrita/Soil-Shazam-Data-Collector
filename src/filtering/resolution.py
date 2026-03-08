@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from tqdm import tqdm
 
-from soil_collector.utils.image_utils import (
+from ..utils import (
     check_resolution,
     collect_image_paths,
     load_image,
