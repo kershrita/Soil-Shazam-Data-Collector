@@ -21,15 +21,45 @@ def _phash_dedup(
 ) -> tuple[set[str], dict[str, list[str]]]:
     """Stage 1: Find duplicates via perceptual hashing (imagededup).
 
+    Uses ThreadPoolExecutor for reliable parallel hashing on Windows
+    (imagededup's built-in multiprocessing can deadlock).
+
     Returns (set of filenames to REMOVE, dict mapping kept→[removed]).
     """
     from imagededup.methods import PHash
 
     logger.info(f"Stage 1 — Perceptual hashing (threshold={threshold}, workers={num_workers})")
     hasher = PHash()
+    image_files = collect_image_paths(image_dir)
 
-    # imagededup expects a directory path; num_enc_workers enables parallel hashing
-    encodings = hasher.encode_images(image_dir=str(image_dir), num_enc_workers=num_workers)
+    # Hash images in parallel using threads (avoids Windows multiprocessing deadlocks)
+    encodings: dict[str, str] = {}
+    errors = 0
+
+    def _hash_one(path: Path) -> tuple[str, str | None]:
+        try:
+            h = hasher.encode_image(image_file=str(path))
+            return path.name, h
+        except Exception as e:
+            logger.debug(f"Failed to hash {path.name}: {e}")
+            return path.name, None
+
+    with ThreadPoolExecutor(max_workers=num_workers) as pool:
+        results = list(tqdm(
+            pool.map(_hash_one, image_files),
+            total=len(image_files),
+            desc="Hashing images (PHash)",
+        ))
+
+    for name, h in results:
+        if h is not None:
+            encodings[name] = h
+        else:
+            errors += 1
+
+    if errors:
+        logger.warning(f"Skipped {errors} images that failed to hash")
+
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=RuntimeWarning)
         duplicates = hasher.find_duplicates(
