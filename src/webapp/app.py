@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
@@ -525,5 +526,85 @@ def create_app(config_dir: Path | None = None) -> Flask:
             mimetype="text/csv",
             headers={"Content-Disposition": "attachment; filename=corrections.csv"},
         )
+
+    # ─── Evaluation / annotation routes ───────────────────────────────────
+
+    @app.route("/annotate")
+    def annotate_page():
+        """Annotation UI for evaluation sampling."""
+        return render_template(
+            "annotate.html",
+            categories=LABEL_CATEGORIES,
+            label_options_all=label_options_all,
+            steps=STEPS,
+        )
+
+    @app.route("/api/eval/sample")
+    def api_eval_sample():
+        """Return the evaluation sample for annotation."""
+        eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
+        sample_path = eval_dir / "sample.json"
+        if not sample_path.exists():
+            return jsonify({"error": "No evaluation sample found. Run: soil-collector eval-sample"}), 404
+        samples = json.loads(sample_path.read_text(encoding="utf-8"))
+        return jsonify({"samples": samples, "total": len(samples)})
+
+    @app.route("/api/eval/annotate", methods=["POST"])
+    def api_eval_annotate():
+        """Save a single annotation for an evaluation sample."""
+        data = request.get_json()
+        if not data or "image" not in data:
+            return jsonify({"error": "Missing image field"}), 400
+
+        image = str(data["image"])
+        is_soil = data.get("is_soil")
+
+        # Build ground truth labels (only for accepted soil images)
+        ground_truth = {}
+        for cat in LABEL_CATEGORIES:
+            val = data.get(cat)
+            if isinstance(val, str) and val.strip():
+                if val.strip() in label_options_all.get(cat, []):
+                    ground_truth[cat] = val.strip()
+
+        # Load sample, update annotation, save
+        eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
+        sample_path = eval_dir / "sample.json"
+        if not sample_path.exists():
+            return jsonify({"error": "No evaluation sample"}), 404
+
+        samples = json.loads(sample_path.read_text(encoding="utf-8"))
+        found = False
+        for s in samples:
+            if s["image"] == image:
+                s["is_soil"] = is_soil
+                if ground_truth:
+                    s["ground_truth"] = ground_truth
+                found = True
+                break
+
+        if not found:
+            return jsonify({"error": f"Image {image} not in sample"}), 404
+
+        sample_path.write_text(
+            json.dumps(samples, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        annotated = sum(1 for s in samples if s["is_soil"] is not None)
+        return jsonify({"status": "saved", "image": image, "progress": f"{annotated}/{len(samples)}"})
+
+    @app.route("/images/eval/<path:filename>")
+    def serve_eval_image(filename):
+        """Serve images for the evaluation annotation UI."""
+        # Try dataset images first, then deduped (for rejected samples)
+        dataset_img_dir = resolve(cfg["paths"]["dataset"]) / "images"
+        if (dataset_img_dir / filename).is_file():
+            return send_from_directory(dataset_img_dir, filename)
+
+        deduped_img_dir = resolve(cfg["paths"]["deduped"]) / "images"
+        if (deduped_img_dir / filename).is_file():
+            return send_from_directory(deduped_img_dir, filename)
+
+        return "Image not found", 404
 
     return app

@@ -373,6 +373,87 @@ def run_all(
     logger.info("=" * 60)
 
 
+# ─── EVALUATION ──────────────────────────────────────────────────────────────
+
+
+@app.command(name="eval-sample")
+def eval_sample(
+    n: int = typer.Option(100, help="Number of accepted images to sample"),
+    n_rejected: int = typer.Option(30, help="Number of rejected images to sample"),
+    seed: int = typer.Option(42, help="Random seed for reproducibility"),
+    config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
+    log_level: str = typer.Option("INFO", help="Logging level"),
+):
+    """Sample random images from the dataset for accuracy evaluation."""
+    setup_logging(log_level)
+
+    cfg = _get_config(config_dir)
+    dataset_dir = _resolve_path(cfg["paths"]["dataset"])
+    eval_dir = dataset_dir.parent / "evaluation"
+
+    from .evaluation import create_eval_sample
+
+    sample_path = create_eval_sample(
+        dataset_dir=dataset_dir,
+        output_dir=eval_dir,
+        n_accepted=n,
+        n_rejected=n_rejected,
+        seed=seed,
+    )
+    typer.echo(f"\nSample created: {sample_path}")
+    typer.echo("Next: run 'soil-collector webapp' and go to /annotate to label the sample.")
+
+
+@app.command(name="eval-report")
+def eval_report(
+    config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
+    log_level: str = typer.Option("INFO", help="Logging level"),
+):
+    """Compute accuracy metrics and generate a shareable report."""
+    setup_logging(log_level)
+    logger = logging.getLogger(__name__)
+
+    cfg = _get_config(config_dir)
+    eval_dir = _resolve_path(cfg["paths"]["dataset"]).parent / "evaluation"
+
+    from .evaluation import compute_metrics, generate_report
+
+    metrics = compute_metrics(eval_dir)
+    if not metrics:
+        typer.echo("No annotated samples found. Annotate via the webapp first.")
+        raise typer.Exit(1)
+
+    report_path = generate_report(eval_dir)
+
+    # Print summary
+    summary = metrics.get("summary", {})
+    sample = metrics.get("sample_size", {})
+    filt = metrics.get("filter", {})
+
+    typer.echo("\n" + "=" * 60)
+    typer.echo("EVALUATION RESULTS")
+    typer.echo("=" * 60)
+    typer.echo(f"Images annotated:       {sample.get('total_annotated', 0)}")
+    typer.echo(f"Filter precision:       {_fmt_pct(filt.get('precision'))}")
+    typer.echo(f"Filter recall:          {_fmt_pct(filt.get('recall'))}")
+    typer.echo(f"Overall label accuracy: {_fmt_pct(summary.get('overall_label_accuracy'))}")
+
+    ranking = summary.get("category_ranking", [])
+    if ranking:
+        typer.echo("\nPer-category accuracy:")
+        for cat, acc in ranking:
+            typer.echo(f"  {cat:25s} {_fmt_pct(acc)}")
+
+    typer.echo(f"\nFull report: {report_path}")
+    typer.echo(f"Raw metrics: {eval_dir / 'metrics.json'}")
+
+
+def _fmt_pct(value) -> str:
+    if value is None:
+        return "—"
+    return f"{value * 100:.1f}%"
+
+
 # ─── VALIDATE (web UI) ──────────────────────────────────────────────────────
 
 

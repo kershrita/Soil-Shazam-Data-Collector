@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% block title %}Accuracy Evaluation — Annotate{% endblock %}
+
+{% block content %}
+<div class="step-header">
+  <div>
+    <h1>Accuracy Evaluation</h1>
+    <p class="subtitle" id="progress-text">Loading evaluation sample…</p>
+  </div>
+  <a href="/" class="btn btn-secondary">&larr; Dashboard</a>
+</div>
+
+<!-- Empty state -->
+<div id="empty-state" style="display:none; text-align:center; padding:3rem;">
+  <h2>No evaluation sample found</h2>
+  <p style="color:var(--text-muted); margin-top:.5rem;">
+    Run <code>soil-collector eval-sample</code> to create a random sample for annotation.
+  </p>
+</div>
+
+<!-- Done state -->
+<div id="done-state" style="display:none; text-align:center; padding:3rem;">
+  <h2 style="color:var(--good);">All images annotated!</h2>
+  <p style="color:var(--text-muted); margin-top:.5rem;">
+    Run <code>soil-collector eval-report</code> to generate the accuracy report.
+  </p>
+</div>
+
+<!-- Annotation card -->
+<div id="annotate-card" style="display:none;">
+  <div style="display:flex; gap:1.5rem; margin-top:1rem; flex-wrap:wrap;">
+    <!-- Image panel -->
+    <div style="flex:1; min-width:300px;">
+      <div style="background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden;">
+        <img id="eval-image" src="" alt="Soil image" style="width:100%; display:block; max-height:500px; object-fit:contain; background:#000;">
+      </div>
+      <p id="image-filename" style="text-align:center; margin-top:.5rem; color:var(--text-muted); font-size:.85rem;"></p>
+      <p id="image-source-badge" style="text-align:center; margin-top:.25rem;"></p>
+    </div>
+
+    <!-- Annotation panel -->
+    <div style="flex:1; min-width:320px;">
+      <div style="background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); padding:1.25rem;">
+
+        <!-- Step 1: Is this soil? -->
+        <div id="soil-check" style="margin-bottom:1.25rem;">
+          <h3 style="margin-bottom:.5rem;">Is this a soil image?</h3>
+          <div style="display:flex; gap:.5rem;">
+            <button class="btn-soil" data-soil="true" onclick="setSoil(true)"
+                    style="flex:1; padding:.6rem; border:2px solid var(--border); border-radius:var(--radius); cursor:pointer; font-size:.9rem; font-weight:600; background:var(--surface);">
+              ✓ Yes, soil
+            </button>
+            <button class="btn-soil" data-soil="false" onclick="setSoil(false)"
+                    style="flex:1; padding:.6rem; border:2px solid var(--border); border-radius:var(--radius); cursor:pointer; font-size:.9rem; font-weight:600; background:var(--surface);">
+              ✗ Not soil
+            </button>
+          </div>
+        </div>
+
+        <!-- Step 2: Labels (only for soil images with predictions) -->
+        <div id="label-section" style="display:none;">
+          <h3 style="margin-bottom:.75rem;">Correct labels <span style="font-weight:400; color:var(--text-muted); font-size:.85rem;">(change only if wrong)</span></h3>
+
+          {% for cat in categories %}
+          <div style="margin-bottom:.75rem;">
+            <label style="display:block; font-size:.8rem; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.25rem;">
+              {{ cat.replace('_', ' ') }}
+              <span id="pred-{{ cat }}" style="font-weight:400; color:var(--primary);"></span>
+            </label>
+            <select id="gt-{{ cat }}" class="gt-select" data-cat="{{ cat }}"
+                    style="width:100%; padding:.4rem .5rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.9rem;">
+              {% for opt in label_options_all[cat] %}
+              <option value="{{ opt }}">{{ opt }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endfor %}
+        </div>
+
+        <!-- Submit -->
+        <div style="display:flex; gap:.5rem; margin-top:1rem;">
+          <button id="btn-skip" onclick="skipImage()" class="btn btn-secondary" style="flex:1;">Skip</button>
+          <button id="btn-save" onclick="saveAnnotation()" class="btn" style="flex:2; background:var(--primary); color:#fff; border:none; padding:.6rem; border-radius:var(--radius); font-weight:600; cursor:pointer;">
+            Save & Next
+          </button>
+        </div>
+
+        <!-- Keyboard hints -->
+        <p style="text-align:center; font-size:.75rem; color:var(--text-muted); margin-top:.75rem;">
+          Keyboard: <kbd>Y</kbd> = soil, <kbd>N</kbd> = not soil, <kbd>Enter</kbd> = save, <kbd>→</kbd> = skip
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const CATEGORIES = {{ categories | tojson }};
+  let samples = [];
+  let currentIdx = 0;
+  let currentSoil = null;
+
+  // Load sample on page load
+  fetch('/api/eval/sample')
+    .then(r => { if (!r.ok) throw new Error('no-sample'); return r.json(); })
+    .then(data => {
+      samples = data.samples;
+      // Jump to first unannotated
+      currentIdx = samples.findIndex(s => s.is_soil === null);
+      if (currentIdx < 0) currentIdx = samples.length;
+      showCurrent();
+    })
+    .catch(() => {
+      document.getElementById('empty-state').style.display = 'block';
+    });
+
+  function showCurrent() {
+    const annotated = samples.filter(s => s.is_soil !== null).length;
+    document.getElementById('progress-text').textContent =
+      `Annotated ${annotated} / ${samples.length} images`;
+
+    if (currentIdx >= samples.length) {
+      document.getElementById('annotate-card').style.display = 'none';
+      document.getElementById('done-state').style.display = 'block';
+      return;
+    }
+
+    const s = samples[currentIdx];
+    document.getElementById('annotate-card').style.display = 'block';
+    document.getElementById('done-state').style.display = 'none';
+
+    // Image
+    document.getElementById('eval-image').src = `/images/eval/${s.image}`;
+    document.getElementById('image-filename').textContent = s.image;
+
+    const badge = s.source === 'rejected'
+      ? '<span style="background:var(--bad-bg); color:var(--bad); padding:.15rem .5rem; border-radius:4px; font-size:.8rem;">Rejected by filter</span>'
+      : '<span style="background:var(--good-bg); color:var(--good); padding:.15rem .5rem; border-radius:4px; font-size:.8rem;">Accepted</span>';
+    document.getElementById('image-source-badge').innerHTML = badge;
+
+    // Reset soil buttons
+    currentSoil = null;
+    document.querySelectorAll('.btn-soil').forEach(b => {
+      b.style.background = 'var(--surface)';
+      b.style.borderColor = 'var(--border)';
+      b.style.color = 'var(--text)';
+    });
+
+    // Labels section: show only for accepted images with predictions
+    const labelSection = document.getElementById('label-section');
+    if (s.source === 'accepted' && s.predicted) {
+      labelSection.style.display = 'block';
+      for (const cat of CATEGORIES) {
+        const pred = s.predicted[cat] || '';
+        document.getElementById(`pred-{{ '${cat}' }}`);
+        // Set prediction display
+        const predSpan = document.getElementById('pred-' + cat);
+        if (predSpan) predSpan.textContent = pred ? `(predicted: ${pred})` : '';
+        // Set dropdown to predicted value
+        const sel = document.getElementById('gt-' + cat);
+        if (sel) sel.value = pred;
+      }
+    } else {
+      labelSection.style.display = 'none';
+    }
+  }
+
+  function setSoil(val) {
+    currentSoil = val;
+    document.querySelectorAll('.btn-soil').forEach(b => {
+      const bVal = b.dataset.soil === 'true';
+      if (bVal === val) {
+        b.style.background = val ? 'var(--good-bg)' : 'var(--bad-bg)';
+        b.style.borderColor = val ? 'var(--good)' : 'var(--bad)';
+        b.style.color = val ? 'var(--good)' : 'var(--bad)';
+      } else {
+        b.style.background = 'var(--surface)';
+        b.style.borderColor = 'var(--border)';
+        b.style.color = 'var(--text)';
+      }
+    });
+
+    // Show/hide label section based on soil answer
+    const s = samples[currentIdx];
+    const labelSection = document.getElementById('label-section');
+    if (val && s.source === 'accepted' && s.predicted) {
+      labelSection.style.display = 'block';
+    } else {
+      labelSection.style.display = 'none';
+    }
+  }
+
+  function saveAnnotation() {
+    if (currentIdx >= samples.length) return;
+    if (currentSoil === null) {
+      alert('Please indicate whether this is a soil image.');
+      return;
+    }
+
+    const s = samples[currentIdx];
+    const body = { image: s.image, is_soil: currentSoil };
+
+    // Collect ground truth labels if soil + accepted
+    if (currentSoil && s.source === 'accepted' && s.predicted) {
+      for (const cat of CATEGORIES) {
+        const sel = document.getElementById('gt-' + cat);
+        if (sel) body[cat] = sel.value;
+      }
+    }
+
+    fetch('/api/eval/annotate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    .then(r => r.json())
+    .then(data => {
+      samples[currentIdx].is_soil = currentSoil;
+      currentIdx++;
+      // Skip to next unannotated
+      while (currentIdx < samples.length && samples[currentIdx].is_soil !== null) {
+        currentIdx++;
+      }
+      showCurrent();
+    });
+  }
+
+  function skipImage() {
+    currentIdx++;
+    while (currentIdx < samples.length && samples[currentIdx].is_soil !== null) {
+      currentIdx++;
+    }
+    showCurrent();
+  }
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+    if (e.key === 'y' || e.key === 'Y') setSoil(true);
+    else if (e.key === 'n' || e.key === 'N') setSoil(false);
+    else if (e.key === 'Enter') saveAnnotation();
+    else if (e.key === 'ArrowRight') skipImage();
+  });
+</script>
+{% endblock %}
