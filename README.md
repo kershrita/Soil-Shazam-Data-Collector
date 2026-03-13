@@ -1,106 +1,147 @@
 # Soil Shazam Data Collector
 
-Automated soil image dataset mining pipeline using CLIP. Downloads soil images from the internet, filters non-soil and watermarked images, auto-labels 7 soil features, deduplicates, and exports a clean labeled dataset.
+Soil Shazam Data Collector is an end-to-end pipeline to build a high-quality soil image dataset from web sources.
 
-## Pipeline Overview
+It supports:
+- large-scale image download
+- quality filtering (resolution, overlay/watermark, soil vs non-soil)
+- deduplication
+- automatic label assignment across 7 soil categories
+- human evaluation workflow and metrics reporting
+- JSON/CSV export
 
-```
-Internet Images (Bing + Google + DuckDuckGo)
-        ↓
-  Mass Download (30k–50k images)
-        ↓
-  Resolution Filter (discard <384px, resize >1024px)
-        ↓
-  Deduplication (perceptual hashing)
-        ↓
-  Overlay + Soil Filtering (CLIP-based watermark/text + soil detection)
-        ↓
-  Auto-Labeling (7 features via CLIP)
-        ↓
-  Manual Verification (5-10% sample)
-        ↓
-  Clean Dataset (JSON + CSV)
-```
+## Pipeline
 
-## Features Labeled
+1. `download`: crawl images from configured sources and queries
+2. `resize`: remove too-small images and resize oversized images
+3. `dedup`: remove perceptual duplicates
+4. `filter`: reject overlays/watermarks and non-soil images
+5. `label`: assign class labels using CLIP prompts
+6. `annotate` (web): human evaluation/ground-truth annotation
+7. `export`: export final dataset files
 
-| Feature | Classes |
-|---------|---------|
-| soil_color | red, yellow, dark, brown, gray, white |
-| soil_texture | sandy, clay, silty, loamy, gravel |
-| particle_size | fine, medium, coarse |
-| crack_presence | high, moderate, none |
-| rock_fraction | high, medium, low, none |
-| surface_structure | compact, loose, aggregated |
-| surface_roughness | rough, moderate, smooth |
+## Label Categories
 
-## Quick Start
+- `soil_color`
+- `soil_texture`
+- `particle_size`
+- `crack_presence`
+- `rock_fraction`
+- `surface_structure`
+- `surface_roughness`
+
+## Installation
 
 ```bash
-# Install
 pip install -e .
-
-# Run full pipeline (small test)
-soil-collector run-all --limit 50
-
-# Run full pipeline (production)
-soil-collector run-all --limit 500
-
-# Run individual steps
-soil-collector download --source all --limit 500
-soil-collector resize
-soil-collector dedup
-soil-collector filter
-soil-collector label
-soil-collector verify
-soil-collector export
 ```
+
+## CLI
+
+Primary command:
+
+```bash
+soil-shazam-data-collector --help
+```
+
+### Typical usage
+
+Run full pipeline:
+
+```bash
+soil-shazam-data-collector run-all --limit 500
+```
+
+Run step-by-step:
+
+```bash
+soil-shazam-data-collector download --source all --limit 500
+soil-shazam-data-collector resize
+soil-shazam-data-collector dedup
+soil-shazam-data-collector filter
+soil-shazam-data-collector label
+soil-shazam-data-collector export
+```
+
+Start web app:
+
+```bash
+soil-shazam-data-collector webapp
+```
+
+## Evaluation Workflow
+
+Create evaluation sample:
+
+```bash
+soil-shazam-data-collector eval-sample
+```
+
+Then open `/annotate` in the web app to label samples:
+- mark `is_soil` (yes/no)
+- if soil, provide all class labels (keep predicted or correct per class)
+
+Generate metrics and report:
+
+```bash
+soil-shazam-data-collector eval-report
+```
+
+Outputs are written under the `evaluation/` directory:
+- `sample.json`
+- `metrics.json`
+- `report.md`
 
 ## Configuration
 
-All configuration is in `config/`:
+Configuration files are in `config/`:
+- `pipeline.yaml`: paths, thresholds, processing settings
+- `prompts.yaml`: CLIP prompts for filter/label behavior
+- `queries.yaml`: search queries
 
-- **`queries.yaml`** — Search queries (add/remove to adjust coverage)
-- **`prompts.yaml`** — CLIP prompts for filtering + labeling (tune for accuracy)
-- **`pipeline.yaml`** — Thresholds, resolution, batch sizes, paths
+## Output
 
-Key settings in `pipeline.yaml`:
+Final dataset artifacts are exported to the configured dataset/output paths as JSON and CSV.
 
-```yaml
-resolution:
-  min_shortest_side: 512    # Discard images smaller than this
-  max_longest_side: 1024    # Resize larger images
-  jpeg_quality: 95          # Output JPEG quality
+## Run Comparison Results (March 8, 2026)
 
-filter:
-  soil_threshold: 0.22      # CLIP similarity cutoff for soil detection
-  overlay_margin: 0.07      # Overlay vs clean score margin (watermark/text)
+Two full runs were compared to measure impact of query/source and threshold optimization.
 
-clip:
-  model_name: "ViT-L-14"   # Can downgrade to "ViT-B-32" for lower VRAM
-  device: "cuda"            # Uses GPU, falls back to CPU
-  batch_size: 128           # Tune based on VRAM (128 is fine for 16GB)
-```
+### Setup
 
-## Requirements
+| Run | Configuration |
+|-----|---------------|
+| Run 1 (Baseline) | 20 queries, Bing only, limit 200/query, threshold 0.30 |
+| Run 2 (Optimized) | 94 queries, Bing + Google + Flickr, limit 200/query, threshold 0.24 |
 
-- Python 3.10+
-- NVIDIA GPU with CUDA (16GB VRAM recommended)
-- ~50GB disk space for raw images
+### Throughput and Yield
 
-## Output Format
+| Metric | Run 1 | Run 2 | Change |
+|--------|-------|-------|--------|
+| Raw images | 1,364 | 12,825 | +840% |
+| Final dataset size | 255 | 2,392 | +838% |
+| Yield rate | 18.7% | 18.6% | ~same |
 
-```json
-{
-  "image": "soil_00412.jpg",
-  "soil_color": "brown",
-  "soil_texture": "sandy",
-  "particle_size": "coarse",
-  "rock_fraction": "medium",
-  "surface_structure": "loose",
-  "crack_presence": "none",
-  "surface_roughness": "moderate"
-}
-```
+### Class Coverage Improvements
 
-Final dataset is exported to `data/dataset/` as both `labels.json` and `labels.csv`.
+| Label slice | Run 1 | Run 2 | Change |
+|-------------|-------|-------|--------|
+| `soil_texture=gravel` | 2.0% | 11.4% | +9.4pp |
+| `crack_presence=high` | 0.0% | 9.7% | +9.7pp |
+| `rock_fraction=high` | 0.4% | 10.8% | +10.4pp |
+| `surface_roughness=smooth` | 5.0% | 15.6% | +10.6pp |
+
+### Key Findings
+
+- Multi-source collection scaled dataset size by ~9.4x while preserving yield quality.
+- All major class coverage gaps from Run 1 were resolved in Run 2.
+- Color balance improved significantly (less brown dominance, better dark/gray coverage).
+- Dedup and overlay filtering behaved as expected at scale:
+  - dedup removed ~34% of resized images
+  - overlay filter flagged ~17% in the larger, noisier crawl
+
+### Remaining Gaps to Improve
+
+- `particle_size=medium` remains relatively low (~8.7%)
+- `soil_color=white` remains low (~2.6%)
+- `crack_presence=none` remains dominant (~84.5%)

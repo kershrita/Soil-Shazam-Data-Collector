@@ -14,8 +14,8 @@ import yaml
 from .utils import setup_logging
 
 app = typer.Typer(
-    name="soil-collector",
-    help="Automated soil image dataset mining pipeline using CLIP.",
+    name="soil-shazam-data-collector",
+    help="Soil Shazam Data Collector: automated soil image dataset mining pipeline using CLIP.",
     add_completion=False,
 )
 
@@ -412,7 +412,7 @@ def eval_sample(
         seed=seed,
     )
     typer.echo(f"\nSample created: {sample_path}")
-    typer.echo("Next: run 'soil-collector webapp' and go to /annotate to label the sample.")
+    typer.echo("Next: run 'soil-shazam-data-collector webapp' and go to /annotate to label the sample.")
 
 
 @app.command(name="eval-report")
@@ -470,15 +470,15 @@ def _fmt_pct(value) -> str:
 
 @app.command()
 def webapp(
-    port: int = typer.Option(5000, help="Port to run the validation server on"),
+    port: int = typer.Option(5000, help="Port to run the Soil Shazam Data Collector web app on"),
     host: str = typer.Option("127.0.0.1", help="Host to bind to"),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
 ):
-    """Launch the validation web UI to browse and correct pipeline outputs."""
+    """Launch the Soil Shazam Data Collector web app."""
     from .webapp import create_app
 
     web_app = create_app(config_dir=config_dir)
-    typer.echo(f"Starting validation UI at http://{host}:{port}")
+    typer.echo(f"Starting Soil Shazam Data Collector at http://{host}:{port}")
     web_app.run(host=host, port=port, debug=True)
 
 

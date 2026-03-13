@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Pipeline Validator{% endblock %}</title>
+  <title>{% block title %}Soil Shazam Data Collector{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
   <nav class="topbar">
-    <a href="/" class="topbar-brand">Soil Pipeline Validator</a>
+    <a href="/" class="topbar-brand">Soil Shazam Data Collector</a>
     <div class="topbar-steps">
       {% for s in steps|default([]) %}
       {% set _sid = s.id if s.id is defined else s['id'] %}

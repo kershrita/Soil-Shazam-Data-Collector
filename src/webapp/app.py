@@ -1,4 +1,4 @@
-"""Flask validation website for the soil data collection pipeline."""
+"""Flask web app for Soil Shazam Data Collector."""
 
 from __future__ import annotations
 
@@ -545,7 +545,9 @@ def create_app(config_dir: Path | None = None) -> Flask:
         eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
         sample_path = eval_dir / "sample.json"
         if not sample_path.exists():
-            return jsonify({"error": "No evaluation sample found. Run: soil-collector eval-sample"}), 404
+            return jsonify({
+                "error": "No evaluation sample found. Run: soil-shazam-data-collector eval-sample"
+            }), 404
         samples = json.loads(sample_path.read_text(encoding="utf-8"))
         return jsonify({"samples": samples, "total": len(samples)})
 
