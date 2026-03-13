@@ -1,74 +1,70 @@
 {% extends "base.html" %}
-{% block title %}Accuracy Evaluation — Annotate{% endblock %}
+{% block title %}Accuracy Evaluation - Annotate{% endblock %}
 
 {% block content %}
 <div class="step-header">
   <div>
     <h1>Accuracy Evaluation</h1>
-    <p class="subtitle" id="progress-text">Loading evaluation sample…</p>
+    <p class="subtitle" id="progress-text">Loading evaluation sample...</p>
   </div>
   <a href="/" class="btn btn-secondary">&larr; Dashboard</a>
 </div>
 
-<!-- Empty state -->
-<div id="empty-state" style="display:none; text-align:center; padding:3rem;">
+<div id="annotate-status" class="annotate-status hidden" aria-live="polite"></div>
+
+<div id="empty-state" class="annotate-state hidden">
   <h2>No evaluation sample found</h2>
-  <p style="color:var(--text-muted); margin-top:.5rem;">
+  <p>
     Run <code>soil-collector eval-sample</code> to create a random sample for annotation.
   </p>
 </div>
 
-<!-- Done state -->
-<div id="done-state" style="display:none; text-align:center; padding:3rem;">
-  <h2 style="color:var(--good);">All images annotated!</h2>
-  <p style="color:var(--text-muted); margin-top:.5rem;">
+<div id="done-state" class="annotate-state hidden">
+  <h2 class="annotate-done-title">All images annotated!</h2>
+  <p>
     Run <code>soil-collector eval-report</code> to generate the accuracy report.
   </p>
 </div>
 
-<!-- Annotation card -->
-<div id="annotate-card" style="display:none;">
-  <div style="display:flex; gap:1.5rem; margin-top:1rem; flex-wrap:wrap;">
-    <!-- Image panel -->
-    <div style="flex:1; min-width:300px;">
-      <div style="background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden;">
-        <img id="eval-image" src="" alt="Soil image" style="width:100%; display:block; max-height:500px; object-fit:contain; background:#000;">
+<div id="annotate-card" class="annotate-card hidden">
+  <div class="annotate-layout">
+    <div class="annotate-image-col">
+      <div class="annotate-image-frame">
+        <img id="eval-image" src="" alt="Soil image">
       </div>
-      <p id="image-filename" style="text-align:center; margin-top:.5rem; color:var(--text-muted); font-size:.85rem;"></p>
-      <p id="image-source-badge" style="text-align:center; margin-top:.25rem;"></p>
+      <p id="image-filename" class="annotate-filename"></p>
+      <p id="image-source-badge" class="annotate-source-wrap"></p>
     </div>
 
-    <!-- Annotation panel -->
-    <div style="flex:1; min-width:320px;">
-      <div style="background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); padding:1.25rem;">
-
-        <!-- Step 1: Is this soil? -->
-        <div id="soil-check" style="margin-bottom:1.25rem;">
-          <h3 style="margin-bottom:.5rem;">Is this a soil image?</h3>
-          <div style="display:flex; gap:.5rem;">
-            <button class="btn-soil" data-soil="true" onclick="setSoil(true)"
-                    style="flex:1; padding:.6rem; border:2px solid var(--border); border-radius:var(--radius); cursor:pointer; font-size:.9rem; font-weight:600; background:var(--surface);">
-              ✓ Yes, soil
+    <div class="annotate-form-col">
+      <div class="annotate-panel">
+        <div id="soil-check" class="annotate-section">
+          <h3>Is this a soil image?</h3>
+          <div class="annotate-soil-actions">
+            <button type="button" class="btn-soil" data-soil="true" onclick="setSoil(true)">
+              Yes, soil
             </button>
-            <button class="btn-soil" data-soil="false" onclick="setSoil(false)"
-                    style="flex:1; padding:.6rem; border:2px solid var(--border); border-radius:var(--radius); cursor:pointer; font-size:.9rem; font-weight:600; background:var(--surface);">
-              ✗ Not soil
+            <button type="button" class="btn-soil" data-soil="false" onclick="setSoil(false)">
+              Not soil
             </button>
           </div>
         </div>
 
-        <!-- Step 2: Labels (only for soil images with predictions) -->
-        <div id="label-section" style="display:none;">
-          <h3 style="margin-bottom:.75rem;">Correct labels <span style="font-weight:400; color:var(--text-muted); font-size:.85rem;">(change only if wrong)</span></h3>
+        <div id="label-section" class="annotate-section hidden">
+          <h3>
+            Ground Truth Labels
+            <span class="annotate-help-text">(keep predicted or correct each class)</span>
+          </h3>
 
           {% for cat in categories %}
-          <div style="margin-bottom:.75rem;">
-            <label style="display:block; font-size:.8rem; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.25rem;">
+          <div class="annotate-field">
+            <label for="gt-{{ cat }}" class="annotate-label">
               {{ cat.replace('_', ' ') }}
-              <span id="pred-{{ cat }}" style="font-weight:400; color:var(--primary);"></span>
+              <span id="pred-{{ cat }}" class="annotate-prediction"></span>
             </label>
-            <select id="gt-{{ cat }}" class="gt-select" data-cat="{{ cat }}"
-                    style="width:100%; padding:.4rem .5rem; border:1px solid var(--border); border-radius:var(--radius); font-size:.9rem;">
+            <select id="gt-{{ cat }}" class="gt-select" data-cat="{{ cat }}">
+              <option value="__keep__">— keep predicted —</option>
+              <option value="">— choose label —</option>
               {% for opt in label_options_all[cat] %}
               <option value="{{ opt }}">{{ opt }}</option>
               {% endfor %}
@@ -77,17 +73,27 @@
           {% endfor %}
         </div>
 
-        <!-- Submit -->
-        <div style="display:flex; gap:.5rem; margin-top:1rem;">
-          <button id="btn-skip" onclick="skipImage()" class="btn btn-secondary" style="flex:1;">Skip</button>
-          <button id="btn-save" onclick="saveAnnotation()" class="btn" style="flex:2; background:var(--primary); color:#fff; border:none; padding:.6rem; border-radius:var(--radius); font-weight:600; cursor:pointer;">
-            Save & Next
-          </button>
+        <div class="annotate-actions">
+          <button id="btn-back" type="button" onclick="goBack()" class="btn btn-secondary">Back</button>
+          <button id="btn-skip" type="button" onclick="skipImage()" class="btn btn-secondary">Skip</button>
+          <button id="btn-save" type="button" onclick="saveAnnotation()" class="btn btn-primary">Save & Next</button>
         </div>
 
-        <!-- Keyboard hints -->
-        <p style="text-align:center; font-size:.75rem; color:var(--text-muted); margin-top:.75rem;">
-          Keyboard: <kbd>Y</kbd> = soil, <kbd>N</kbd> = not soil, <kbd>Enter</kbd> = save, <kbd>→</kbd> = skip
+        <div class="annotate-secondary-actions">
+          <button id="btn-undo" type="button" onclick="undoLastSave()" class="btn btn-small" disabled>
+            Undo last save
+          </button>
+          <span id="undo-note" class="annotate-help-text"></span>
+        </div>
+
+        <p class="annotate-hints">
+          Keyboard:
+          <kbd>Y</kbd> soil,
+          <kbd>N</kbd> not soil,
+          <kbd>Enter</kbd> save,
+          <kbd>&rarr;</kbd> skip,
+          <kbd>&larr;</kbd> back,
+          <kbd>U</kbd> undo
         </p>
       </div>
     </div>
@@ -98,150 +104,314 @@
 {% block scripts %}
 <script>
   const CATEGORIES = {{ categories | tojson }};
+  const LABEL_OPTIONS = {{ label_options_all | tojson }};
+  const KEEP_SENTINEL = '__keep__';
   let samples = [];
   let currentIdx = 0;
   let currentSoil = null;
+  let isSaving = false;
+  const historyStack = [];
 
-  // Load sample on page load
-  fetch('/api/eval/sample')
-    .then(r => { if (!r.ok) throw new Error('no-sample'); return r.json(); })
-    .then(data => {
-      samples = data.samples;
-      // Jump to first unannotated
-      currentIdx = samples.findIndex(s => s.is_soil === null);
-      if (currentIdx < 0) currentIdx = samples.length;
-      showCurrent();
-    })
-    .catch(() => {
-      document.getElementById('empty-state').style.display = 'block';
-    });
-
-  function showCurrent() {
-    const annotated = samples.filter(s => s.is_soil !== null).length;
-    document.getElementById('progress-text').textContent =
-      `Annotated ${annotated} / ${samples.length} images`;
-
-    if (currentIdx >= samples.length) {
-      document.getElementById('annotate-card').style.display = 'none';
-      document.getElementById('done-state').style.display = 'block';
+  function setAnnotateStatus(message, type) {
+    const statusEl = document.getElementById('annotate-status');
+    if (!statusEl) return;
+    if (!message) {
+      statusEl.textContent = '';
+      statusEl.className = 'annotate-status hidden';
       return;
     }
-
-    const s = samples[currentIdx];
-    document.getElementById('annotate-card').style.display = 'block';
-    document.getElementById('done-state').style.display = 'none';
-
-    // Image
-    document.getElementById('eval-image').src = `/images/eval/${s.image}`;
-    document.getElementById('image-filename').textContent = s.image;
-
-    const badge = s.source === 'rejected'
-      ? '<span style="background:var(--bad-bg); color:var(--bad); padding:.15rem .5rem; border-radius:4px; font-size:.8rem;">Rejected by filter</span>'
-      : '<span style="background:var(--good-bg); color:var(--good); padding:.15rem .5rem; border-radius:4px; font-size:.8rem;">Accepted</span>';
-    document.getElementById('image-source-badge').innerHTML = badge;
-
-    // Reset soil buttons
-    currentSoil = null;
-    document.querySelectorAll('.btn-soil').forEach(b => {
-      b.style.background = 'var(--surface)';
-      b.style.borderColor = 'var(--border)';
-      b.style.color = 'var(--text)';
-    });
-
-    // Labels section: show only for accepted images with predictions
-    const labelSection = document.getElementById('label-section');
-    if (s.source === 'accepted' && s.predicted) {
-      labelSection.style.display = 'block';
-      for (const cat of CATEGORIES) {
-        const pred = s.predicted[cat] || '';
-        document.getElementById(`pred-{{ '${cat}' }}`);
-        // Set prediction display
-        const predSpan = document.getElementById('pred-' + cat);
-        if (predSpan) predSpan.textContent = pred ? `(predicted: ${pred})` : '';
-        // Set dropdown to predicted value
-        const sel = document.getElementById('gt-' + cat);
-        if (sel) sel.value = pred;
-      }
-    } else {
-      labelSection.style.display = 'none';
-    }
+    statusEl.textContent = message;
+    statusEl.className = 'annotate-status ' + (type || 'info');
   }
 
-  function setSoil(val) {
-    currentSoil = val;
-    document.querySelectorAll('.btn-soil').forEach(b => {
-      const bVal = b.dataset.soil === 'true';
-      if (bVal === val) {
-        b.style.background = val ? 'var(--good-bg)' : 'var(--bad-bg)';
-        b.style.borderColor = val ? 'var(--good)' : 'var(--bad)';
-        b.style.color = val ? 'var(--good)' : 'var(--bad)';
-      } else {
-        b.style.background = 'var(--surface)';
-        b.style.borderColor = 'var(--border)';
-        b.style.color = 'var(--text)';
-      }
-    });
-
-    // Show/hide label section based on soil answer
-    const s = samples[currentIdx];
-    const labelSection = document.getElementById('label-section');
-    if (val && s.source === 'accepted' && s.predicted) {
-      labelSection.style.display = 'block';
-    } else {
-      labelSection.style.display = 'none';
-    }
+  function updateUndoUI() {
+    const undoBtn = document.getElementById('btn-undo');
+    const note = document.getElementById('undo-note');
+    if (undoBtn) undoBtn.disabled = historyStack.length === 0;
+    if (note) note.textContent = historyStack.length ? 'One-click recovery for accidental saves.' : '';
   }
 
-  function saveAnnotation() {
-    if (currentIdx >= samples.length) return;
-    if (currentSoil === null) {
-      alert('Please indicate whether this is a soil image.');
-      return;
-    }
-
-    const s = samples[currentIdx];
-    const body = { image: s.image, is_soil: currentSoil };
-
-    // Collect ground truth labels if soil + accepted
-    if (currentSoil && s.source === 'accepted' && s.predicted) {
-      for (const cat of CATEGORIES) {
-        const sel = document.getElementById('gt-' + cat);
-        if (sel) body[cat] = sel.value;
-      }
-    }
-
-    fetch('/api/eval/annotate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    .then(r => r.json())
-    .then(data => {
-      samples[currentIdx].is_soil = currentSoil;
-      currentIdx++;
-      // Skip to next unannotated
-      while (currentIdx < samples.length && samples[currentIdx].is_soil !== null) {
-        currentIdx++;
-      }
-      showCurrent();
-    });
+  function toSampleByImage(imageName) {
+    return samples.find(s => s.image === imageName);
   }
 
-  function skipImage() {
+  function moveToNextUnannotated() {
     currentIdx++;
     while (currentIdx < samples.length && samples[currentIdx].is_soil !== null) {
       currentIdx++;
     }
-    showCurrent();
   }
 
-  // Keyboard shortcuts
+  function soilBadgeHtml(source) {
+    if (source === 'rejected') {
+      return '<span class="source-pill source-pill-bad">Rejected by filter</span>';
+    }
+    return '<span class="source-pill source-pill-good">Accepted</span>';
+  }
+
+  function setSoilButtonVisual() {
+    document.querySelectorAll('.btn-soil').forEach(btn => {
+      const buttonValue = btn.dataset.soil === 'true';
+      const isActive = currentSoil !== null && buttonValue === currentSoil;
+      btn.classList.toggle('active-yes', isActive && currentSoil === true);
+      btn.classList.toggle('active-no', isActive && currentSoil === false);
+      btn.classList.toggle('active-neutral', !isActive);
+    });
+  }
+
+  function shouldShowLabelSection(sample) {
+    return Boolean(currentSoil);
+  }
+
+  function predictedLabel(sample, cat) {
+    const pred = (sample.predicted && sample.predicted[cat]) || '';
+    const options = LABEL_OPTIONS[cat] || [];
+    return options.includes(pred) ? pred : '';
+  }
+
+  function syncLabelSection(sample) {
+    const labelSection = document.getElementById('label-section');
+    if (!labelSection) return;
+    const show = shouldShowLabelSection(sample);
+    labelSection.classList.toggle('hidden', !show);
+    if (!show) return;
+
+    for (const cat of CATEGORIES) {
+      const pred = predictedLabel(sample, cat);
+      const predSpan = document.getElementById('pred-' + cat);
+      if (predSpan) predSpan.textContent = pred ? '(predicted: ' + pred + ')' : '(predicted: N/A)';
+      const sel = document.getElementById('gt-' + cat);
+      if (!sel) continue;
+      const keepOpt = sel.querySelector('option[value="' + KEEP_SENTINEL + '"]');
+      if (keepOpt) {
+        keepOpt.disabled = !pred;
+        keepOpt.textContent = pred ? ('— keep predicted: ' + pred + ' —') : '— keep predicted (N/A) —';
+      }
+      if (sample.ground_truth && sample.ground_truth[cat]) {
+        sel.value = sample.ground_truth[cat];
+      } else if (pred) {
+        sel.value = KEEP_SENTINEL;
+      } else {
+        sel.value = '';
+      }
+    }
+  }
+
+  function showCurrent() {
+    const emptyState = document.getElementById('empty-state');
+    const doneState = document.getElementById('done-state');
+    const annotateCard = document.getElementById('annotate-card');
+
+    const annotated = samples.filter(s => s.is_soil !== null).length;
+    document.getElementById('progress-text').textContent =
+      'Annotated ' + annotated + ' / ' + samples.length + ' images';
+
+    if (!samples.length) {
+      emptyState.classList.remove('hidden');
+      doneState.classList.add('hidden');
+      annotateCard.classList.add('hidden');
+      return;
+    }
+
+    if (currentIdx >= samples.length) {
+      annotateCard.classList.add('hidden');
+      doneState.classList.remove('hidden');
+      emptyState.classList.add('hidden');
+      setAnnotateStatus('Annotation queue complete.', 'success');
+      return;
+    }
+
+    const sample = samples[currentIdx];
+    annotateCard.classList.remove('hidden');
+    doneState.classList.add('hidden');
+    emptyState.classList.add('hidden');
+
+    document.getElementById('eval-image').src = '/images/eval/' + sample.image;
+    document.getElementById('image-filename').textContent = sample.image;
+    document.getElementById('image-source-badge').innerHTML = soilBadgeHtml(sample.source);
+
+    currentSoil = sample.is_soil;
+    setSoilButtonVisual();
+    syncLabelSection(sample);
+  }
+
+  function setSoil(value) {
+    currentSoil = value;
+    const sample = samples[currentIdx];
+    setSoilButtonVisual();
+    if (sample) syncLabelSection(sample);
+    setAnnotateStatus('', '');
+  }
+
+  function buildPayload(sample, soilValue, labelsOverride) {
+    const body = { image: sample.image, is_soil: soilValue };
+    if (soilValue === true) {
+      if (labelsOverride !== undefined && labelsOverride !== null) {
+        for (const cat of CATEGORIES) {
+          if (labelsOverride[cat]) body[cat] = labelsOverride[cat];
+        }
+      } else {
+        for (const cat of CATEGORIES) {
+          const sel = document.getElementById('gt-' + cat);
+          const selectedValue = sel ? sel.value : '';
+          if (selectedValue === KEEP_SENTINEL) {
+            const pred = predictedLabel(sample, cat);
+            if (pred) body[cat] = pred;
+          } else if (selectedValue) {
+            body[cat] = selectedValue;
+          }
+        }
+      }
+    }
+    return body;
+  }
+
+  function applyLocalSampleUpdate(imageName, payload) {
+    const target = toSampleByImage(imageName);
+    if (!target) return;
+    target.is_soil = payload.is_soil;
+    if (payload.is_soil === true) {
+      target.ground_truth = {};
+      for (const cat of CATEGORIES) {
+        if (payload[cat]) target.ground_truth[cat] = payload[cat];
+      }
+    } else {
+      delete target.ground_truth;
+    }
+  }
+
+  function saveAnnotation() {
+    if (isSaving || currentIdx >= samples.length) return;
+    if (currentSoil === null) {
+      setAnnotateStatus('Please choose "Yes, soil" or "Not soil" before saving.', 'error');
+      return;
+    }
+
+    const sample = samples[currentIdx];
+    const payload = buildPayload(sample, currentSoil);
+    if (currentSoil === true) {
+      const missing = CATEGORIES.filter(cat => !payload[cat]);
+      if (missing.length > 0) {
+        setAnnotateStatus(
+          'Please set all class labels before saving: ' + missing.join(', '),
+          'error'
+        );
+        return;
+      }
+    }
+    const previous = {
+      is_soil: sample.is_soil,
+      ground_truth: sample.ground_truth ? { ...sample.ground_truth } : null,
+    };
+
+    isSaving = true;
+    fetch('/api/eval/annotate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) throw new Error(data.error);
+        applyLocalSampleUpdate(sample.image, payload);
+        historyStack.push({
+          image: sample.image,
+          previousIndex: currentIdx,
+          previous: previous,
+        });
+        updateUndoUI();
+        setAnnotateStatus('Saved. You can undo the last save if needed.', 'success');
+        moveToNextUnannotated();
+        showCurrent();
+      })
+      .catch(err => {
+        setAnnotateStatus('Save failed: ' + err.message, 'error');
+      })
+      .finally(() => {
+        isSaving = false;
+      });
+  }
+
+  function skipImage() {
+    if (currentIdx >= samples.length) return;
+    moveToNextUnannotated();
+    showCurrent();
+    setAnnotateStatus('Skipped current image.', 'info');
+  }
+
+  function goBack() {
+    if (!samples.length) return;
+    currentIdx = Math.max(0, currentIdx - 1);
+    showCurrent();
+    setAnnotateStatus('Moved to previous image.', 'info');
+  }
+
+  function undoLastSave() {
+    if (!historyStack.length || isSaving) return;
+    const last = historyStack.pop();
+    const sample = toSampleByImage(last.image);
+    if (!sample) {
+      updateUndoUI();
+      return;
+    }
+
+    const payload = buildPayload(
+      sample,
+      last.previous.is_soil,
+      last.previous.ground_truth || {}
+    );
+
+    isSaving = true;
+    fetch('/api/eval/annotate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) throw new Error(data.error);
+        applyLocalSampleUpdate(last.image, payload);
+        currentIdx = last.previousIndex;
+        showCurrent();
+        setAnnotateStatus('Last save was undone.', 'success');
+      })
+      .catch(err => {
+        historyStack.push(last);
+        setAnnotateStatus('Undo failed: ' + err.message, 'error');
+      })
+      .finally(() => {
+        updateUndoUI();
+        isSaving = false;
+      });
+  }
+
+  // Load sample on page load
+  fetch('/api/eval/sample')
+    .then(r => {
+      if (!r.ok) throw new Error('no-sample');
+      return r.json();
+    })
+    .then(data => {
+      samples = data.samples || [];
+      currentIdx = samples.findIndex(s => s.is_soil === null);
+      if (currentIdx < 0) currentIdx = samples.length;
+      updateUndoUI();
+      showCurrent();
+    })
+    .catch(() => {
+      samples = [];
+      updateUndoUI();
+      showCurrent();
+    });
+
   document.addEventListener('keydown', e => {
     if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
     if (e.key === 'y' || e.key === 'Y') setSoil(true);
     else if (e.key === 'n' || e.key === 'N') setSoil(false);
     else if (e.key === 'Enter') saveAnnotation();
     else if (e.key === 'ArrowRight') skipImage();
+    else if (e.key === 'ArrowLeft') goBack();
+    else if (e.key === 'u' || e.key === 'U') undoLastSave();
   });
 </script>
 {% endblock %}

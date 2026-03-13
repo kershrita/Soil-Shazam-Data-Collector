@@ -11,6 +11,9 @@
 {% block content %}
 <h1>Pipeline Overview</h1>
 <p class="subtitle">Click any step to browse images and validate results.</p>
+<div class="dashboard-actions">
+  <a href="/annotate" class="btn btn-primary">Open Evaluation Workspace</a>
+</div>
 
 <!-- Pipeline flow -->
 <div class="pipeline-flow">
@@ -26,6 +29,46 @@
   {% endif %}
   {% endfor %}
 </div>
+
+{% if funnel_rows %}
+<section class="funnel-section">
+  <div class="section-head">
+    <h2>Pipeline Funnel</h2>
+    <p class="subtitle">Step-to-step retention and drop-off rates.</p>
+  </div>
+  <div class="funnel-grid">
+    {% for row in funnel_rows %}
+    <div class="funnel-row">
+      <div class="funnel-title">{{ row.from_name }} -> {{ row.to_name }}</div>
+      <div class="funnel-metrics">
+        <span>{{ "{:,}".format(row.from_count) }} -> {{ "{:,}".format(row.to_count) }}</span>
+        {% if row.conversion_pct is not none %}
+        <strong>{{ "{:.1f}%".format(row.conversion_pct) }} kept</strong>
+        <span class="text-muted">{{ "{:.1f}%".format(row.drop_pct) }} dropped</span>
+        {% else %}
+        <span class="text-muted">N/A</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if anomalies %}
+<section class="anomaly-section">
+  <div class="section-head">
+    <h2>Anomaly Watch</h2>
+  </div>
+  <div class="anomaly-list">
+    {% for item in anomalies %}
+    <div class="anomaly-item {{ item.severity }}">
+      {{ item.message }}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
 <!-- Per-step detail cards -->
 <div class="stats-grid">

@@ -1,14 +1,13 @@
+﻿
 /* Image browser logic for the step detail page. */
 
-/* ─── Distribution chart ────────────────────────────────────────────────── */
-
+/* Distribution chart */
 (function () {
-  // All-Natural earthy tones (Vyond)
   var COLOR_PALETTE = [
-    '#357560', '#384727', '#F5D54A', '#CABDAF',
-    '#527462', '#3A887C', '#C0C49B', '#D5DCDC',
-    '#B87F45', '#9EB45B', '#7D8D87', '#CBC497',
-    '#D3B73E', '#8B341F', '#89A68F', '#A3A47A',
+    "#357560", "#384727", "#F5D54A", "#CABDAF",
+    "#527462", "#3A887C", "#C0C49B", "#D5DCDC",
+    "#B87F45", "#9EB45B", "#7D8D87", "#CBC497",
+    "#D3B73E", "#8B341F", "#89A68F", "#A3A47A",
   ];
 
   function valueColor(val) {
@@ -22,7 +21,6 @@
     var categories = Object.keys(distributions);
     if (!categories.length) return;
 
-    // Collect all unique value names across both kept and removed
     var seen = {};
     categories.forEach(function (cat) {
       Object.keys(distributions[cat]).forEach(function (val) { seen[val] = true; });
@@ -34,37 +32,36 @@
 
     var datasets = [];
     allValues.forEach(function (val) {
-      // Kept dataset
       datasets.push({
         label: val,
         data: categories.map(function (cat) { return distributions[cat][val] || 0; }),
         backgroundColor: valueColor(val),
         borderWidth: 0,
-        stack: 'kept',
+        stack: "kept",
       });
     });
 
     if (removedDistributions) {
       allValues.forEach(function (val) {
         datasets.push({
-          label: val + ' (removed)',
+          label: val + " (removed)",
           data: categories.map(function (cat) {
             return (removedDistributions[cat] && removedDistributions[cat][val]) || 0;
           }),
-          backgroundColor: valueColor(val) + '55',
+          backgroundColor: valueColor(val) + "55",
           borderWidth: 1,
           borderColor: valueColor(val),
           borderDash: [3, 3],
-          stack: 'removed',
+          stack: "removed",
         });
       });
     }
 
     new Chart(canvas, {
-      type: 'bar',
+      type: "bar",
       data: {
         labels: categories.map(function (c) {
-          var s = c.replace(/_/g, ' ');
+          var s = c.replace(/_/g, " ");
           return s.charAt(0).toUpperCase() + s.slice(1);
         }),
         datasets: datasets,
@@ -73,16 +70,16 @@
         responsive: true,
         maintainAspectRatio: false,
         scales: {
-          x: { stacked: true, ticks: { font: { size: 11 }, color: '#6b7280' }, grid: { display: false } },
-          y: { stacked: true, ticks: { font: { size: 11 }, color: '#6b7280' }, grid: { color: '#e0e3e8' } },
+          x: { stacked: true, ticks: { font: { size: 11 }, color: "#6b7280" }, grid: { display: false } },
+          y: { stacked: true, ticks: { font: { size: 11 }, color: "#6b7280" }, grid: { color: "#e0e3e8" } },
         },
         plugins: {
           legend: { display: false },
           tooltip: {
-            mode: 'index',
+            mode: "index",
             filter: function (item) { return item.parsed.y > 0; },
             callbacks: {
-              label: function (ctx) { return ctx.dataset.label + ': ' + ctx.parsed.y; },
+              label: function (ctx) { return ctx.dataset.label + ": " + ctx.parsed.y; },
             },
           },
         },
@@ -95,119 +92,198 @@
 (function () {
   "use strict";
 
-  let currentPage = 1;
-  let totalPages = 1;
-  let currentImages = [];
-  let currentIndex = -1;
-  let debounceTimer = null;
+  var state = {
+    currentPage: 1,
+    perPage: 60,
+    density: "comfy",
+    totalPages: 1,
+    currentImages: [],
+    currentIndex: -1,
+    debounceTimer: null,
+    detailCache: new Map(),
+    activeDetailToken: null,
+    handlingPopstate: false,
+    lastFocused: null,
+  };
 
-  /* ─── Grid loading ──────────────────────────────────────────────────── */
+  function byId(id) {
+    return document.getElementById(id);
+  }
 
-  function buildParams() {
-    const params = new URLSearchParams();
-    params.set("page", currentPage);
-    params.set("per_page", 60);
+  function escapeHtml(s) {
+    if (s === undefined || s === null) return "";
+    var div = document.createElement("div");
+    div.textContent = String(s);
+    return div.innerHTML;
+  }
 
-    if (window.VIEW_MODE) {
-      params.set("view", window.VIEW_MODE);
+  function formatCat(cat) {
+    return String(cat || "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
+  function parsePositiveInt(value, fallback) {
+    var parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  function getSearchInput() {
+    return byId("search-input");
+  }
+
+  function getPerPageSelect() {
+    return byId("per-page-select");
+  }
+
+  function getDensitySelect() {
+    return byId("density-select");
+  }
+
+  function getGrid() {
+    return byId("image-grid");
+  }
+
+  function getOverlay() {
+    return byId("detail-overlay");
+  }
+
+  function isOverlayOpen() {
+    var overlay = getOverlay();
+    return !!overlay && !overlay.classList.contains("hidden");
+  }
+
+  function applyDensityClass() {
+    var grid = getGrid();
+    if (!grid) return;
+    grid.classList.remove("density-comfy", "density-compact");
+    grid.classList.add(state.density === "compact" ? "density-compact" : "density-comfy");
+  }
+
+  function setDetailLoading(isLoading) {
+    var loading = byId("detail-loading");
+    var panel = document.querySelector(".detail-panel");
+    if (loading) loading.classList.toggle("hidden", !isLoading);
+    if (panel) panel.classList.toggle("is-loading", !!isLoading);
+  }
+
+  function buildUiParams(includeImage) {
+    var params = new URLSearchParams();
+    params.set("page", String(state.currentPage));
+    params.set("per_page", String(state.perPage));
+    params.set("density", state.density);
+
+    if (window.VIEW_MODE) params.set("view", window.VIEW_MODE);
+
+    var searchInput = getSearchInput();
+    if (searchInput && searchInput.value.trim()) {
+      params.set("search", searchInput.value.trim());
     }
 
-    const search = document.getElementById("search-input");
-    if (search && search.value.trim()) {
-      params.set("search", search.value.trim());
+    document.querySelectorAll(".filter-select[data-category]").forEach(function (sel) {
+      if (sel.value) params.set(sel.dataset.category, sel.value);
+    });
+
+    if (includeImage && state.currentIndex >= 0 && state.currentImages[state.currentIndex]) {
+      params.set("image", state.currentImages[state.currentIndex].filename);
     }
 
-    document.querySelectorAll(".filter-select").forEach(function (sel) {
-      if (sel.value) {
-        params.set(sel.dataset.category, sel.value);
-      }
+    return params;
+  }
+
+  function syncUrl(mode, includeImage) {
+    if (state.handlingPopstate) return;
+    var params = buildUiParams(includeImage !== false);
+    var query = params.toString();
+    var nextUrl = window.location.pathname + (query ? ("?" + query) : "");
+    var currentUrl = window.location.pathname + window.location.search;
+    if (nextUrl === currentUrl) return;
+
+    if (mode === "push") {
+      history.pushState({}, "", nextUrl);
+    } else {
+      history.replaceState({}, "", nextUrl);
+    }
+  }
+
+  function applyUrlState() {
+    var params = new URLSearchParams(window.location.search);
+    state.currentPage = parsePositiveInt(params.get("page"), 1);
+
+    var perPage = parsePositiveInt(params.get("per_page"), 60);
+    if ([30, 60, 120].indexOf(perPage) === -1) perPage = 60;
+    state.perPage = perPage;
+
+    var density = params.get("density");
+    state.density = density === "compact" ? "compact" : "comfy";
+
+    var searchInput = getSearchInput();
+    if (searchInput) searchInput.value = params.get("search") || "";
+
+    var perPageSelect = getPerPageSelect();
+    if (perPageSelect) perPageSelect.value = String(state.perPage);
+
+    var densitySelect = getDensitySelect();
+    if (densitySelect) densitySelect.value = state.density;
+
+    document.querySelectorAll(".filter-select[data-category]").forEach(function (sel) {
+      var value = params.get(sel.dataset.category) || "";
+      var hasOption = Array.from(sel.options).some(function (opt) { return opt.value === value; });
+      sel.value = hasOption ? value : "";
+    });
+  }
+
+  function buildApiParams() {
+    var params = new URLSearchParams();
+    params.set("page", String(state.currentPage));
+    params.set("per_page", String(state.perPage));
+    if (window.VIEW_MODE) params.set("view", window.VIEW_MODE);
+
+    var searchInput = getSearchInput();
+    if (searchInput && searchInput.value.trim()) {
+      params.set("search", searchInput.value.trim());
+    }
+
+    document.querySelectorAll(".filter-select[data-category]").forEach(function (sel) {
+      if (sel.value) params.set(sel.dataset.category, sel.value);
     });
 
     return params.toString();
   }
 
-  function loadImages() {
-    if (!window.STEP_ID) return;
-
-    const grid = document.getElementById("image-grid");
+  function showGridSkeleton() {
+    var grid = getGrid();
     if (!grid) return;
-    grid.innerHTML = '<div class="loading">Loading images...</div>';
-
-    fetch("/api/images/" + window.STEP_ID + "?" + buildParams())
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        currentImages = data.images;
-        totalPages = data.pages;
-        renderGrid(data);
-        renderPagination(data);
-      })
-      .catch(function (err) {
-        grid.innerHTML = '<div class="empty-state">Error loading images.</div>';
-        console.error(err);
-      });
+    grid.classList.add("is-loading");
+    applyDensityClass();
+    var count = Math.min(state.perPage, 24);
+    var html = "";
+    for (var i = 0; i < count; i++) {
+      html +=
+        '<div class="image-skeleton">' +
+        '<div class="image-skeleton-thumb"></div>' +
+        '<div class="image-skeleton-meta">' +
+        '<div class="image-skeleton-line"></div>' +
+        '<div class="image-skeleton-line short"></div>' +
+        "</div></div>";
+    }
+    grid.innerHTML = html;
+    grid.setAttribute("aria-busy", "true");
   }
 
-  function renderGrid(data) {
-    var grid = document.getElementById("image-grid");
-
-    if (!data.images.length) {
-      grid.innerHTML = '<div class="empty-state">No images found.</div>';
-      return;
+  function addTag(wrap, tagTpl, text, extraClass) {
+    if (tagTpl && tagTpl.content) {
+      var t = tagTpl.content.cloneNode(true);
+      var span = t.querySelector(".label-tag");
+      span.textContent = text;
+      if (extraClass) span.classList.add(extraClass);
+      wrap.appendChild(t);
+    } else {
+      var span2 = document.createElement("span");
+      span2.className = "label-tag" + (extraClass ? (" " + extraClass) : "");
+      span2.textContent = text;
+      wrap.appendChild(span2);
     }
-
-    var tpl = document.getElementById("tpl-image-card");
-    var tagTpl = document.getElementById("tpl-label-tag");
-    var useTpl = tpl && tpl.content;
-    var frag = document.createDocumentFragment();
-
-    data.images.forEach(function (img, idx) {
-      if (useTpl) {
-        var clone = tpl.content.cloneNode(true);
-        var card = clone.querySelector(".image-card");
-        card.dataset.idx = idx;
-        if (img.corrected) card.classList.add("corrected");
-        if (img.rejection) card.classList.add("rejected");
-        if (img.removed) card.classList.add("rejected");
-
-        var imgEl = card.querySelector("img");
-        imgEl.src = img.thumb_url || img.url;
-        var displayName = img.filename.split("/").pop();
-        imgEl.alt = displayName;
-
-        var nameEl = card.querySelector(".image-card-name");
-        nameEl.textContent = displayName;
-        nameEl.title = img.filename;
-
-        var labelsWrap = card.querySelector(".image-card-labels");
-        buildLabelTags(labelsWrap, img, tagTpl);
-
-        card.addEventListener("click", function () { openDetail(idx); });
-        frag.appendChild(clone);
-      } else {
-        // Fallback: string-based rendering
-        var corrClass = img.corrected ? " corrected" : "";
-        var rejectedClass = img.rejection ? " rejected" : "";
-        var removedClass = img.removed ? " rejected" : "";
-        var displayName = img.filename.split("/").pop();
-        var thumbSrc = img.thumb_url || img.url;
-        var labelsHtml = buildLabelTagsHtml(img);
-
-        var div = document.createElement("div");
-        div.innerHTML =
-          '<div class="image-card' + corrClass + rejectedClass + removedClass + '" data-idx="' + idx + '">' +
-          '<img src="' + escapeHtml(thumbSrc) + '" loading="lazy" alt="' + escapeHtml(displayName) + '">' +
-          '<div class="image-card-info">' +
-          '<div class="image-card-name" title="' + escapeHtml(img.filename) + '">' + escapeHtml(displayName) + "</div>" +
-          labelsHtml +
-          "</div></div>";
-        var cardEl = div.firstChild;
-        cardEl.addEventListener("click", function () { openDetail(idx); });
-        frag.appendChild(cardEl);
-      }
-    });
-
-    grid.innerHTML = "";
-    grid.appendChild(frag);
   }
 
   function buildLabelTags(wrap, img, tagTpl) {
@@ -233,76 +309,99 @@
     if (img.source) addTag(wrap, tagTpl, img.source, "score-tag");
   }
 
-  function addTag(wrap, tagTpl, text, extraClass) {
-    if (tagTpl && tagTpl.content) {
-      var t = tagTpl.content.cloneNode(true);
-      var span = t.querySelector(".label-tag");
-      span.textContent = text;
-      if (extraClass) span.classList.add(extraClass);
-      wrap.appendChild(t);
-    } else {
-      var span = document.createElement("span");
-      span.className = "label-tag" + (extraClass ? " " + extraClass : "");
-      span.textContent = text;
-      wrap.appendChild(span);
-    }
-  }
+  function renderGrid(data) {
+    var grid = getGrid();
+    if (!grid) return;
+    grid.classList.remove("is-loading");
+    grid.removeAttribute("aria-busy");
+    applyDensityClass();
 
-  function buildLabelTagsHtml(img) {
-    var html = "";
-    if (img.rejection) {
-      var reasonText = img.rejection.reason === "overlay" ? "Overlay" : "Low score";
-      var scoreText = img.rejection.reason === "overlay"
-        ? "ov=" + escapeHtml(img.rejection.overlay_score || "")
-        : "pos=" + escapeHtml(img.rejection.positive_score || "");
-      var sourceTag = img.source ? '<span class="label-tag score-tag">' + escapeHtml(img.source) + '</span>' : '';
-      return '<div class="image-card-labels">' +
-        '<span class="label-tag rejection-tag">' + reasonText + "</span>" +
-        '<span class="label-tag score-tag">' + scoreText + "</span>" +
-        sourceTag + "</div>";
+    if (!data.images.length) {
+      grid.innerHTML = '<div class="empty-state">No images found.</div>';
+      return;
     }
-    if (img.removed) {
-      var sourceTag2 = img.source ? '<span class="label-tag score-tag">' + escapeHtml(img.source) + '</span>' : '';
-      return '<div class="image-card-labels"><span class="label-tag rejection-tag">Removed</span>' + sourceTag2 + "</div>";
-    }
-    if (img.labels) {
-      var tags = [];
-      Object.keys(img.labels).forEach(function (cat) {
-        if (img.labels[cat]) tags.push('<span class="label-tag">' + escapeHtml(img.labels[cat]) + "</span>");
+
+    var tpl = byId("tpl-image-card");
+    var tagTpl = byId("tpl-label-tag");
+    var frag = document.createDocumentFragment();
+
+    data.images.forEach(function (img, idx) {
+      var clone = tpl && tpl.content ? tpl.content.cloneNode(true) : null;
+      var card = clone ? clone.querySelector(".image-card") : document.createElement("div");
+
+      if (!clone) {
+        card.className = "image-card";
+        card.innerHTML =
+          '<img loading="lazy" alt="">' +
+          '<div class="image-card-info">' +
+          '<div class="image-card-name"></div>' +
+          '<div class="image-card-labels"></div>' +
+          "</div>";
+      }
+
+      card.dataset.idx = idx;
+      card.dataset.filename = img.filename;
+      card.setAttribute("role", "button");
+      card.setAttribute("tabindex", "0");
+
+      if (img.rejection || img.removed) card.classList.add("rejected");
+
+      var displayName = img.filename.split("/").pop();
+      var imgEl = card.querySelector("img");
+      imgEl.src = img.thumb_url || img.url;
+      imgEl.alt = displayName;
+
+      var nameEl = card.querySelector(".image-card-name");
+      nameEl.textContent = displayName;
+      nameEl.title = img.filename;
+
+      var labelsWrap = card.querySelector(".image-card-labels");
+      labelsWrap.innerHTML = "";
+      buildLabelTags(labelsWrap, img, tagTpl);
+
+      card.setAttribute("aria-label", "Open details for " + displayName);
+      card.addEventListener("click", function () {
+        openDetail(idx, { historyMode: "push" });
       });
-      if (img.source) tags.push('<span class="label-tag score-tag">' + escapeHtml(img.source) + '</span>');
-      if (tags.length) html = '<div class="image-card-labels">' + tags.join("") + "</div>";
-    } else if (img.source) {
-      html = '<div class="image-card-labels"><span class="label-tag score-tag">' + escapeHtml(img.source) + '</span></div>';
-    }
-    return html;
+      card.addEventListener("keydown", function (evt) {
+        if (evt.key === "Enter" || evt.key === " ") {
+          evt.preventDefault();
+          openDetail(idx, { historyMode: "push" });
+        }
+      });
+
+      if (clone) frag.appendChild(clone);
+      else frag.appendChild(card);
+    });
+
+    grid.innerHTML = "";
+    grid.appendChild(frag);
   }
 
   function renderPagination(data) {
-    var el = document.getElementById("pagination");
+    var el = byId("pagination");
     if (!el) return;
-    if (data.pages <= 1) { el.innerHTML = ""; return; }
-
-    var html = "";
-
-    // Previous button
-    if (currentPage > 1) {
-      html += '<button class="btn btn-small" data-page="' + (currentPage - 1) + '">&larr;</button>';
+    if (data.pages <= 1) {
+      el.innerHTML = "";
+      return;
     }
 
-    // Page numbers (show max 9 centered on current)
-    var startPage = Math.max(1, currentPage - 4);
+    var html = "";
+    if (state.currentPage > 1) {
+      html += '<button class="btn btn-small" data-page="' + (state.currentPage - 1) + '">&larr;</button>';
+    }
+
+    var startPage = Math.max(1, state.currentPage - 4);
     var endPage = Math.min(data.pages, startPage + 8);
     startPage = Math.max(1, endPage - 8);
 
     for (var p = startPage; p <= endPage; p++) {
-      var active = p === currentPage ? " active" : "";
+      var active = p === state.currentPage ? " active" : "";
       html += '<button class="btn btn-small' + active + '" data-page="' + p + '">' + p + "</button>";
     }
 
-    // Next button
-    if (currentPage < data.pages) {
-      html += '<button class="btn btn-small" data-page="' + (currentPage + 1) + '">&rarr;</button>';
+    if (state.currentPage < data.pages) {
+      html += '<button class="btn btn-small" data-page="' + (state.currentPage + 1) + '">&rarr;</button>';
     }
 
     html += '<span class="page-info">' + data.total + " images</span>";
@@ -310,289 +409,523 @@
 
     el.querySelectorAll("button").forEach(function (btn) {
       btn.addEventListener("click", function () {
-        currentPage = parseInt(this.dataset.page, 10);
-        loadImages();
+        state.currentPage = parseInt(this.dataset.page, 10);
+        loadImages({ historyMode: "push" });
         window.scrollTo(0, 0);
       });
     });
   }
 
-  /* ─── Detail panel ──────────────────────────────────────────────────── */
+  function getActiveFilterItems() {
+    var items = [];
 
-  function openDetail(idx) {
-    currentIndex = idx;
-    var img = currentImages[idx];
-    if (!img) return;
+    var searchInput = getSearchInput();
+    if (searchInput && searchInput.value.trim()) {
+      items.push({
+        key: "search",
+        label: 'Search: "' + searchInput.value.trim() + '"',
+        clear: function () { searchInput.value = ""; },
+      });
+    }
 
-    var overlay = document.getElementById("detail-overlay");
-    overlay.classList.remove("hidden");
-    document.body.style.overflow = "hidden";
+    document.querySelectorAll(".filter-select[data-category]").forEach(function (sel) {
+      if (!sel.value) return;
+      var selectedLabel = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : sel.value;
+      items.push({
+        key: sel.dataset.category,
+        label: formatCat(sel.dataset.category) + ": " + selectedLabel,
+        clear: function () { sel.value = ""; },
+      });
+    });
 
-    // Apply layout based on step
+    return items;
+  }
+
+  function renderActiveFilters() {
+    var wrap = byId("active-filters");
+    if (!wrap) return;
+    var items = getActiveFilterItems();
+    if (!items.length) {
+      wrap.classList.add("hidden");
+      wrap.innerHTML = "";
+      return;
+    }
+
+    wrap.classList.remove("hidden");
+    var html = "";
+    items.forEach(function (item, idx) {
+      html +=
+        '<span class="filter-chip" data-chip-idx="' + idx + '">' +
+        "<span>" + escapeHtml(item.label) + "</span>" +
+        '<button type="button" aria-label="Remove filter">&times;</button>' +
+        "</span>";
+    });
+    wrap.innerHTML = html;
+
+    wrap.querySelectorAll(".filter-chip").forEach(function (chip) {
+      chip.querySelector("button").addEventListener("click", function () {
+        var idx = parseInt(chip.dataset.chipIdx, 10);
+        if (!Number.isFinite(idx) || !items[idx]) return;
+        items[idx].clear();
+        state.currentPage = 1;
+        loadImages({ historyMode: "push" });
+      });
+    });
+  }
+
+  function renderResultsSummary(data) {
+    var el = byId("results-summary");
+    if (!el) return;
+    var showing = data.images.length;
+    var total = data.total || 0;
+    el.textContent =
+      "Showing " + showing + " of " + total +
+      " images | Page " + state.currentPage + " / " + Math.max(1, data.pages || 1) +
+      " | " + state.perPage + " per page";
+  }
+
+  function loadImages(options) {
+    if (!window.STEP_ID) return Promise.resolve();
+    options = options || {};
+    showGridSkeleton();
+
+    return fetch("/api/images/" + window.STEP_ID + "?" + buildApiParams())
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        state.currentImages = data.images || [];
+        state.totalPages = data.pages || 1;
+
+        if (state.currentPage > state.totalPages) {
+          state.currentPage = state.totalPages;
+          return loadImages(options);
+        }
+
+        renderGrid(data);
+        renderPagination(data);
+        renderActiveFilters();
+        renderResultsSummary(data);
+        syncUrl(options.historyMode || "replace", isOverlayOpen());
+
+        if (options.openImageFromUrl) {
+          openDetailFromUrl();
+        }
+      })
+      .catch(function (err) {
+        var grid = getGrid();
+        if (grid) {
+          grid.classList.remove("is-loading");
+          grid.innerHTML = '<div class="empty-state">Error loading images.</div>';
+        }
+        console.error(err);
+      });
+  }
+
+  function resetDetailSections() {
+    var ids = [
+      "detail-labels",
+      "detail-scores",
+      "detail-rejection",
+      "detail-soil-scores",
+      "detail-resize-compare",
+      "detail-dimensions",
+      "detail-duplicates",
+      "detail-compare-wrap",
+    ];
+    ids.forEach(function (id) {
+      var el = byId(id);
+      if (el) el.innerHTML = "";
+    });
+  }
+
+  function updateDetailCounter() {
+    var el = byId("detail-counter");
+    if (!el) return;
+    var imgNum = state.currentIndex + 1;
+    var imgTotal = state.currentImages.length;
+    var txt = "Image " + imgNum + " / " + imgTotal;
+    if (state.totalPages > 1) {
+      txt += " | Page " + state.currentPage + " / " + state.totalPages;
+    }
+    el.textContent = txt;
+  }
+
+  function buildDetailUrl(filename) {
+    var detailUrl = "/api/image-detail/" + window.STEP_ID + "/" + encodeURIComponent(filename);
+    if (window.VIEW_MODE) detailUrl += "?view=" + window.VIEW_MODE;
+    return detailUrl;
+  }
+
+  function fetchDetail(filename) {
+    if (state.detailCache.has(filename)) {
+      return Promise.resolve(state.detailCache.get(filename));
+    }
+    return fetch(buildDetailUrl(filename))
+      .then(function (r) { return r.json(); })
+      .then(function (detail) {
+        state.detailCache.set(filename, detail);
+        return detail;
+      });
+  }
+
+  function prefetchAdjacentDetails() {
+    [state.currentIndex - 1, state.currentIndex + 1].forEach(function (idx) {
+      var img = state.currentImages[idx];
+      if (!img || state.detailCache.has(img.filename)) return;
+      fetchDetail(img.filename).catch(function () { /* ignore prefetch errors */ });
+    });
+  }
+
+  function setOverlayLayout() {
+    var overlay = getOverlay();
+    if (!overlay) return;
     var content = overlay.querySelector(".detail-content");
+    if (!content) return;
     if (window.STEP_ID === "download" || window.STEP_ID === "resize") {
       content.classList.add("layout-centered");
     } else {
       content.classList.remove("layout-centered");
     }
+  }
 
-    document.getElementById("detail-img").src = img.url;
-    document.getElementById("detail-filename").textContent = img.filename;
+  function openDetail(index, options) {
+    options = options || {};
+    var img = state.currentImages[index];
+    if (!img) return;
+    state.currentIndex = index;
+    var detailToken = Date.now() + ":" + img.filename;
+    state.activeDetailToken = detailToken;
+
+    var overlay = getOverlay();
+    if (!overlay) return;
+    if (!isOverlayOpen()) state.lastFocused = document.activeElement;
+    overlay.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+    setOverlayLayout();
+
+    var closeBtn = byId("detail-close");
+    if (closeBtn) closeBtn.focus();
+
+    var detailImg = byId("detail-img");
+    if (detailImg) {
+      detailImg.src = img.url;
+      detailImg.alt = img.filename;
+      detailImg.style.display = "";
+    }
+    var title = byId("detail-filename");
+    if (title) title.textContent = img.filename;
+
+    resetDetailSections();
     updateDetailCounter();
+    setDetailLoading(true);
 
-    // Reset sections
-    document.getElementById("detail-labels").innerHTML = "";
-    document.getElementById("detail-scores").innerHTML = "";
-    var rejectionEl = document.getElementById("detail-rejection");
-    if (rejectionEl) rejectionEl.innerHTML = "";
-    var soilScoresEl = document.getElementById("detail-soil-scores");
-    if (soilScoresEl) soilScoresEl.innerHTML = "";
-    var resizeCompare = document.getElementById("detail-resize-compare");
-    if (resizeCompare) resizeCompare.innerHTML = "";
-    var dimsEl = document.getElementById("detail-dimensions");
-    if (dimsEl) dimsEl.innerHTML = "";
-    var dupsEl = document.getElementById("detail-duplicates");
-    if (dupsEl) dupsEl.innerHTML = "";
-    var cmpWrapReset = document.getElementById("detail-compare-wrap");
-    if (cmpWrapReset) cmpWrapReset.innerHTML = "";
+    syncUrl(options.historyMode || "replace", true);
 
-    var corrForm = document.getElementById("correction-form");
-    if (corrForm) {
-      var corrImage = document.getElementById("corr-image");
-      if (corrImage) corrImage.value = img.filename;
-      // Reset selects
-      corrForm.querySelectorAll(".corr-select").forEach(function (sel) { sel.value = ""; });
+    fetchDetail(img.filename)
+      .then(function (detail) {
+        if (state.activeDetailToken !== detailToken || state.currentIndex !== index) return;
+        renderDetail(detail);
+        setDetailLoading(false);
+        prefetchAdjacentDetails();
+      })
+      .catch(function (err) {
+        console.error(err);
+        setDetailLoading(false);
+      });
+  }
+
+  function openDetailFromUrl() {
+    var params = new URLSearchParams(window.location.search);
+    var imageFromUrl = params.get("image");
+    if (!imageFromUrl) {
+      if (isOverlayOpen()) closeDetail();
+      return;
     }
-    var corrStatus = document.getElementById("corr-status");
-    if (corrStatus) { corrStatus.textContent = ""; corrStatus.className = "corr-status"; }
 
-    // Fetch full detail
-    var detailUrl = "/api/image-detail/" + window.STEP_ID + "/" + encodeURIComponent(img.filename);
-    if (window.VIEW_MODE) {
-      detailUrl += "?view=" + window.VIEW_MODE;
+    var idx = state.currentImages.findIndex(function (img) { return img.filename === imageFromUrl; });
+    if (idx >= 0) {
+      openDetail(idx, { historyMode: "replace" });
+    } else if (isOverlayOpen()) {
+      closeDetail();
     }
-    fetch(detailUrl)
-      .then(function (r) { return r.json(); })
-      .then(function (detail) { renderDetail(detail); })
-      .catch(function (err) { console.error(err); });
+  }
+
+  function closeDetail() {
+    var overlay = getOverlay();
+    if (!overlay) return;
+    overlay.classList.add("hidden");
+    document.body.style.overflow = "";
+    state.currentIndex = -1;
+    state.activeDetailToken = null;
+    var cmpWrap = byId("detail-compare-wrap");
+    if (cmpWrap) cmpWrap.innerHTML = "";
+    syncUrl("replace", false);
+    if (state.lastFocused && typeof state.lastFocused.focus === "function") {
+      state.lastFocused.focus();
+      state.lastFocused = null;
+    }
+  }
+
+  function trapOverlayFocus(evt) {
+    if (evt.key !== "Tab" || !isOverlayOpen()) return;
+    var overlay = getOverlay();
+    if (!overlay) return;
+    var focusables = overlay.querySelectorAll(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    );
+    if (!focusables.length) return;
+    var first = focusables[0];
+    var last = focusables[focusables.length - 1];
+
+    if (evt.shiftKey && document.activeElement === first) {
+      evt.preventDefault();
+      last.focus();
+    } else if (!evt.shiftKey && document.activeElement === last) {
+      evt.preventDefault();
+      first.focus();
+    }
   }
 
   function renderDetail(detail) {
-    // Resize before/after comparison
-    var resizeCompare = document.getElementById("detail-resize-compare");
+    var detailImg = byId("detail-img");
+    var resizeCompare = byId("detail-resize-compare");
     if (resizeCompare && detail.original_url) {
-      var mainImg = document.getElementById("detail-img");
-      mainImg.style.display = "none";
+      if (detailImg) detailImg.style.display = "none";
       var html = '<div class="resize-comparison">';
       html += '<div class="resize-side">';
       html += '<div class="resize-label">Original';
       if (detail.original_dimensions) {
-        html += ' <span class="resize-dims">' + detail.original_dimensions.width + '×' + detail.original_dimensions.height + 'px</span>';
+        html += ' <span class="resize-dims">' + detail.original_dimensions.width + "x" + detail.original_dimensions.height + "px</span>";
       }
-      html += '</div>';
+      html += "</div>";
       html += '<img src="' + escapeHtml(detail.original_url) + '" alt="Original">';
-      html += '</div>';
-      html += '<div class="resize-arrow">→</div>';
+      html += "</div>";
+      html += '<div class="resize-arrow">-&gt;</div>';
       html += '<div class="resize-side">';
       html += '<div class="resize-label">Resized';
       if (detail.dimensions) {
-        html += ' <span class="resize-dims">' + detail.dimensions.width + '×' + detail.dimensions.height + 'px</span>';
+        html += ' <span class="resize-dims">' + detail.dimensions.width + "x" + detail.dimensions.height + "px</span>";
       }
-      html += '</div>';
+      html += "</div>";
       html += '<img src="' + escapeHtml(detail.url) + '" alt="Resized">';
-      html += '</div>';
-      html += '</div>';
+      html += "</div></div>";
       resizeCompare.innerHTML = html;
-    } else if (resizeCompare && detail.dimensions) {
-      var mainImg = document.getElementById("detail-img");
-      mainImg.style.display = "";
-      resizeCompare.innerHTML = '';
-    } else {
-      var mainImg = document.getElementById("detail-img");
-      if (mainImg) mainImg.style.display = "";
+    } else if (detailImg) {
+      detailImg.style.display = "";
+      if (resizeCompare) resizeCompare.innerHTML = "";
     }
 
-    // Pixel dimensions
-    var dimsEl = document.getElementById("detail-dimensions");
+    var dimsEl = byId("detail-dimensions");
     if (dimsEl && detail.dimensions) {
-      dimsEl.innerHTML = '<span class="dims-badge">' + detail.dimensions.width + ' × ' + detail.dimensions.height + ' px</span>';
+      dimsEl.innerHTML = '<span class="dims-badge">' + detail.dimensions.width + " x " + detail.dimensions.height + " px</span>";
     }
 
-    // Labels
-    var labelsEl = document.getElementById("detail-labels");
-    if (detail.labels) {
-      var html = "";
+    var labelsEl = byId("detail-labels");
+    if (labelsEl && detail.labels) {
+      var labelsHtml = "";
       window.CATEGORIES.forEach(function (cat) {
-        var val = detail.labels[cat] || "—";
+        var val = detail.labels[cat] || "-";
         var conf = "";
         if (detail.scores && detail.scores[cat]) {
           conf = '<span class="detail-label-conf">(' + detail.scores[cat].confidence.toFixed(3) + ")</span>";
         }
-        // Check if corrected
-        var corrVal = "";
-        if (detail.corrections && detail.corrections[cat] && detail.corrections[cat] !== val) {
-          corrVal = ' <span style="color:var(--warn)">→ ' + escapeHtml(detail.corrections[cat]) + "</span>";
-        }
-        html +=
+        labelsHtml +=
           '<div class="detail-label-row">' +
           '<span class="detail-label-cat">' + formatCat(cat) + "</span>" +
-          '<span><span class="detail-label-val">' + escapeHtml(val) + "</span>" + conf + corrVal + "</span>" +
+          '<span><span class="detail-label-val">' + escapeHtml(val) + "</span>" + conf + "</span>" +
           "</div>";
       });
-      labelsEl.innerHTML = html;
+      labelsEl.innerHTML = labelsHtml;
     }
 
-    // Scores breakdown
-    var scoresEl = document.getElementById("detail-scores");
-    if (detail.scores) {
-      var html = "";
+    var scoresEl = byId("detail-scores");
+    if (scoresEl && detail.scores) {
+      var scoresHtml = "";
       window.CATEGORIES.forEach(function (cat) {
         var catData = detail.scores[cat];
         if (!catData || !catData.all_scores) return;
-        html += '<div class="score-category"><div class="score-category-name">' + formatCat(cat) + "</div>";
+        scoresHtml += '<div class="score-category"><div class="score-category-name">' + formatCat(cat) + "</div>";
         var entries = Object.entries(catData.all_scores).sort(function (a, b) { return b[1] - a[1]; });
-        var maxScore = entries[0][1];
+        var maxScore = entries[0][1] || 0;
         entries.forEach(function (pair) {
-          var lbl = pair[0], score = pair[1];
+          var lbl = pair[0];
+          var score = pair[1];
           var pct = maxScore > 0 ? (score / maxScore * 100) : 0;
           var cls = lbl === catData.assigned ? "assigned" : "other";
-          html +=
+          scoresHtml +=
             '<div class="score-bar-row">' +
             '<span class="score-bar-label">' + escapeHtml(lbl) + "</span>" +
             '<div class="score-bar-track"><div class="score-bar-fill ' + cls + '" style="width:' + pct + '%"></div></div>' +
             '<span class="score-bar-value">' + score.toFixed(3) + "</span>" +
             "</div>";
         });
-        html += "</div>";
+        scoresHtml += "</div>";
       });
-      scoresEl.innerHTML = html;
+      scoresEl.innerHTML = scoresHtml;
     }
 
-    // Soil filter scores (for filter/rejected steps) — with threshold bars
-    var soilScoresEl = document.getElementById("detail-soil-scores");
-    if (soilScoresEl && (detail.soil_scores || detail.overlay_scores)) {
-      var html = "";
+    var soilScoresEl = byId("detail-soil-scores");
+    if (soilScoresEl && (detail.soil_scores || detail.overlay_scores || detail.filter_metrics)) {
+      var soilHtml = "";
+      var thresholds = detail.thresholds || {};
+      var metrics = detail.filter_metrics || {};
+      var soilThreshold = Number.isFinite(parseFloat(thresholds.soil_threshold))
+        ? parseFloat(thresholds.soil_threshold)
+        : 0.5;
+      var overlayMargin = Number.isFinite(parseFloat(thresholds.overlay_margin))
+        ? parseFloat(thresholds.overlay_margin)
+        : 0.5;
+
       if (detail.source) {
-        html += '<div class="soil-score-row"><strong>Source:</strong> ' + escapeHtml(detail.source) + '</div>';
+        soilHtml += '<div class="soil-score-row"><strong>Source:</strong> ' + escapeHtml(detail.source) + "</div>";
       }
       if (detail.soil_scores) {
         var s = detail.soil_scores;
-        var pos = parseFloat(s.positive) || 0;
-        var neg = parseFloat(s.negative) || 0;
-        html += '<div class="threshold-section"><strong>Soil filter</strong>';
-        html += '<div class="threshold-bar-row">';
-        html += '<span class="threshold-label">Positive</span>';
-        html += '<div class="threshold-track"><div class="threshold-fill threshold-good" style="width:' + Math.min(pos * 100, 100) + '%"></div>';
-        html += '<div class="threshold-marker" style="left:50%" title="Threshold: 0.5"></div></div>';
-        html += '<span class="threshold-value" style="color:' + (pos >= 0.5 ? 'var(--good)' : 'var(--bad)') + '">' + pos.toFixed(3) + '</span></div>';
-        html += '<div class="threshold-bar-row">';
-        html += '<span class="threshold-label">Negative</span>';
-        html += '<div class="threshold-track"><div class="threshold-fill threshold-bad" style="width:' + Math.min(neg * 100, 100) + '%"></div>';
-        html += '<div class="threshold-marker" style="left:50%" title="Threshold: 0.5"></div></div>';
-        html += '<span class="threshold-value" style="color:' + (neg < 0.5 ? 'var(--good)' : 'var(--bad)') + '">' + neg.toFixed(3) + '</span></div>';
-        html += '<div class="soil-score-row" style="font-size:.75rem;color:var(--text-muted)">kept=' + escapeHtml(s.kept) + '</div>';
-        html += '</div>';
+        var posVal = parseFloat(s.positive);
+        var negVal = parseFloat(s.negative);
+        var hasPos = Number.isFinite(posVal);
+        var hasNeg = Number.isFinite(negVal);
+        var posPct = hasPos ? Math.min(Math.max(posVal * 100, 0), 100) : 0;
+        var negPct = hasNeg ? Math.min(Math.max(negVal * 100, 0), 100) : 0;
+        var soilMarkerPct = Math.min(Math.max(soilThreshold * 100, 0), 100);
+        var posColor = hasPos && posVal >= soilThreshold ? "var(--good)" : "var(--bad)";
+        var gapVal = Number.isFinite(parseFloat(metrics.soil_gap)) ? parseFloat(metrics.soil_gap) : null;
+        var marginVal = Number.isFinite(parseFloat(metrics.soil_margin)) ? parseFloat(metrics.soil_margin) : null;
+
+        soilHtml += '<div class="threshold-section"><strong>Soil filter</strong>';
+        soilHtml += '<div class="threshold-bar-row"><span class="threshold-label">Positive</span>';
+        soilHtml += '<div class="threshold-track"><div class="threshold-fill threshold-good" style="width:' + posPct + '%"></div>';
+        soilHtml += '<div class="threshold-marker" style="left:' + soilMarkerPct + '%" title="Soil threshold: ' + soilThreshold.toFixed(3) + '"></div></div>';
+        soilHtml += '<span class="threshold-value" style="color:' + posColor + '">' + (hasPos ? posVal.toFixed(3) : "N/A") + "</span></div>";
+
+        soilHtml += '<div class="threshold-bar-row"><span class="threshold-label">Negative</span>';
+        soilHtml += '<div class="threshold-track"><div class="threshold-fill threshold-bad" style="width:' + negPct + '%"></div></div>';
+        soilHtml += '<span class="threshold-value">' + (hasNeg ? negVal.toFixed(3) : "N/A") + "</span></div>";
+
+        if (gapVal !== null) {
+          soilHtml += '<div class="soil-score-row" style="font-size:.75rem;color:var(--text-muted)">positive-negative=' + gapVal.toFixed(3) + "</div>";
+        }
+        if (marginVal !== null) {
+          soilHtml += '<div class="soil-score-row" style="font-size:.75rem;color:var(--text-muted)">positive-threshold=' + marginVal.toFixed(3) + "</div>";
+        }
+        soilHtml += '<div class="soil-score-row" style="font-size:.75rem;color:var(--text-muted)">rule: positive &gt;= ' + soilThreshold.toFixed(3) + " and positive &gt; negative</div>";
+        soilHtml += "</div>";
       }
       if (detail.overlay_scores) {
         var o = detail.overlay_scores;
-        var ovScore = parseFloat(o.overlay_score) || 0;
-        var clScore = parseFloat(o.clean_score) || 0;
-        html += '<div class="threshold-section"><strong>Overlay filter</strong>';
-        html += '<div class="threshold-bar-row">';
-        html += '<span class="threshold-label">Overlay</span>';
-        html += '<div class="threshold-track"><div class="threshold-fill threshold-bad" style="width:' + Math.min(ovScore * 100, 100) + '%"></div>';
-        html += '<div class="threshold-marker" style="left:50%" title="Threshold: 0.5"></div></div>';
-        html += '<span class="threshold-value" style="color:' + (ovScore < 0.5 ? 'var(--good)' : 'var(--bad)') + '">' + ovScore.toFixed(3) + '</span></div>';
-        html += '<div class="threshold-bar-row">';
-        html += '<span class="threshold-label">Clean</span>';
-        html += '<div class="threshold-track"><div class="threshold-fill threshold-good" style="width:' + Math.min(clScore * 100, 100) + '%"></div>';
-        html += '<div class="threshold-marker" style="left:50%" title="Threshold: 0.5"></div></div>';
-        html += '<span class="threshold-value" style="color:' + (clScore >= 0.5 ? 'var(--good)' : 'var(--bad)') + '">' + clScore.toFixed(3) + '</span></div>';
-        html += '<div class="soil-score-row" style="font-size:.75rem;color:var(--text-muted)">flagged=' + escapeHtml(o.flagged) + '</div>';
-        html += '</div>';
+        var ovVal = parseFloat(o.overlay_score);
+        var clVal = parseFloat(o.clean_score);
+        var hasOv = Number.isFinite(ovVal);
+        var hasCl = Number.isFinite(clVal);
+        var ovPct = hasOv ? Math.min(Math.max(ovVal * 100, 0), 100) : 0;
+        var clPct = hasCl ? Math.min(Math.max(clVal * 100, 0), 100) : 0;
+        var deltaVal = Number.isFinite(parseFloat(metrics.overlay_delta))
+          ? parseFloat(metrics.overlay_delta)
+          : (hasOv && hasCl ? (ovVal - clVal) : null);
+        var deltaNorm = deltaVal !== null ? Math.min(Math.max((deltaVal + 0.5) * 100, 0), 100) : 0;
+        var overlayMarkerPct = Math.min(Math.max((overlayMargin + 0.5) * 100, 0), 100);
+        var deltaPass = deltaVal !== null ? deltaVal <= overlayMargin : null;
+
+        soilHtml += '<div class="threshold-section"><strong>Overlay filter</strong>';
+        soilHtml += '<div class="threshold-bar-row"><span class="threshold-label">Overlay</span>';
+        soilHtml += '<div class="threshold-track"><div class="threshold-fill threshold-bad" style="width:' + ovPct + '%"></div></div>';
+        soilHtml += '<span class="threshold-value">' + (hasOv ? ovVal.toFixed(3) : "N/A") + "</span></div>";
+
+        soilHtml += '<div class="threshold-bar-row"><span class="threshold-label">Clean</span>';
+        soilHtml += '<div class="threshold-track"><div class="threshold-fill threshold-good" style="width:' + clPct + '%"></div></div>';
+        soilHtml += '<span class="threshold-value">' + (hasCl ? clVal.toFixed(3) : "N/A") + "</span></div>";
+
+        if (deltaVal !== null) {
+          soilHtml += '<div class="threshold-bar-row"><span class="threshold-label">Delta</span>';
+          soilHtml += '<div class="threshold-track"><div class="threshold-fill ' + (deltaPass ? "threshold-good" : "threshold-bad") + '" style="width:' + deltaNorm + '%"></div>';
+          soilHtml += '<div class="threshold-marker" style="left:' + overlayMarkerPct + '%" title="Overlay margin: ' + overlayMargin.toFixed(3) + '"></div></div>';
+          soilHtml += '<span class="threshold-value" style="color:' + (deltaPass ? "var(--good)" : "var(--bad)") + '">' + deltaVal.toFixed(3) + "</span></div>";
+        }
+        soilHtml += '<div class="soil-score-row" style="font-size:.75rem;color:var(--text-muted)">rule: (overlay-clean) &gt; ' + overlayMargin.toFixed(3) + " => reject</div>";
+        soilHtml += '<div class="soil-score-row" style="font-size:.75rem;color:var(--text-muted)">flagged=' + escapeHtml(o.flagged) + "</div>";
+        soilHtml += "</div>";
       }
-      soilScoresEl.innerHTML = html;
+      if (metrics.decision_band) {
+        soilHtml += '<div class="soil-score-row" style="font-size:.75rem;color:var(--text-muted)">decision band=' + escapeHtml(metrics.decision_band) + " | nearest boundary=" + escapeHtml(metrics.nearest_boundary || "unknown") + "</div>";
+      }
+      soilScoresEl.innerHTML = soilHtml;
     }
 
-    // Rejection info (for rejected view in filter step)
-    var rejectionEl = document.getElementById("detail-rejection");
+    var rejectionEl = byId("detail-rejection");
     if (rejectionEl && detail.rejection) {
       var r = detail.rejection;
-      var reasonLabel = r.reason === "overlay" ? "Overlay (watermark/text)"
-        : "Low soil score";
-      var reasonClass = r.reason === "overlay" ? "rejection-wm"
-        : "rejection-score";
-      var html =
+      var thresholdsInfo = detail.thresholds || {};
+      var soilThresholdInfo = Number.isFinite(parseFloat(thresholdsInfo.soil_threshold))
+        ? parseFloat(thresholdsInfo.soil_threshold).toFixed(3)
+        : null;
+      var overlayMarginInfo = Number.isFinite(parseFloat(thresholdsInfo.overlay_margin))
+        ? parseFloat(thresholdsInfo.overlay_margin).toFixed(3)
+        : null;
+      var reasonLabel = r.reason === "overlay" ? "Overlay (watermark/text)" : "Low soil score";
+      var reasonClass = r.reason === "overlay" ? "rejection-wm" : "rejection-score";
+      var rejectionHtml =
         '<div class="rejection-info ' + reasonClass + '">' +
         '<div class="rejection-reason"><strong>Rejection reason:</strong> ' + reasonLabel + "</div>";
-
-      if (r.positive_score) {
-        html += '<div class="rejection-detail">Soil positive: <strong>' + escapeHtml(r.positive_score) + "</strong></div>";
+      if (r.positive_score) rejectionHtml += '<div class="rejection-detail">Soil positive: <strong>' + escapeHtml(r.positive_score) + "</strong></div>";
+      if (r.negative_score) rejectionHtml += '<div class="rejection-detail">Soil negative: <strong>' + escapeHtml(r.negative_score) + "</strong></div>";
+      if (r.overlay_score) rejectionHtml += '<div class="rejection-detail">Overlay score: <strong>' + escapeHtml(r.overlay_score) + "</strong></div>";
+      if (r.clean_score) rejectionHtml += '<div class="rejection-detail">Clean score: <strong>' + escapeHtml(r.clean_score) + "</strong></div>";
+      if (r.reason === "overlay" && overlayMarginInfo) {
+        rejectionHtml += '<div class="rejection-detail">Rule: overlay-clean &gt; <strong>' + overlayMarginInfo + "</strong></div>";
       }
-      if (r.negative_score) {
-        html += '<div class="rejection-detail">Soil negative: <strong>' + escapeHtml(r.negative_score) + "</strong></div>";
+      if (r.reason !== "overlay" && soilThresholdInfo) {
+        rejectionHtml += '<div class="rejection-detail">Rule: positive &ge; <strong>' + soilThresholdInfo + "</strong> and positive &gt; negative</div>";
       }
-      if (r.overlay_score) {
-        html += '<div class="rejection-detail">Overlay score: <strong>' + escapeHtml(r.overlay_score) + "</strong></div>";
-      }
-      if (r.clean_score) {
-        html += '<div class="rejection-detail">Clean score: <strong>' + escapeHtml(r.clean_score) + "</strong></div>";
-      }
-      html += "</div>";
-      rejectionEl.innerHTML = html;
-    }
-    if (rejectionEl && detail.removed) {
+      rejectionHtml += "</div>";
+      rejectionEl.innerHTML = rejectionHtml;
+    } else if (rejectionEl && detail.removed) {
       var sourceLabel = detail.source || "unknown";
-      var dupHtml =
+      var removedHtml =
         '<div class="rejection-info rejection-score">' +
         '<div class="rejection-reason"><strong>Status:</strong> Removed as duplicate</div>' +
-        '<div class="rejection-detail">Source: <strong>' + escapeHtml(sourceLabel) + '</strong></div>';
+        '<div class="rejection-detail">Source: <strong>' + escapeHtml(sourceLabel) + "</strong></div>";
       if (detail.duplicate_of) {
-        dupHtml += '<div class="rejection-detail">Duplicate of: <strong>' + escapeHtml(detail.duplicate_of) + '</strong></div>';
+        removedHtml += '<div class="rejection-detail">Duplicate of: <strong>' + escapeHtml(detail.duplicate_of) + "</strong></div>";
       }
-      dupHtml += "</div>";
-      rejectionEl.innerHTML = dupHtml;
+      removedHtml += "</div>";
+      rejectionEl.innerHTML = removedHtml;
     }
 
-    // Duplicate group thumbnails
-    var dupsEl = document.getElementById("detail-duplicates");
+    var dupsEl = byId("detail-duplicates");
     if (dupsEl) {
       var allDups = [];
       var groupLabel = "";
 
       if (detail.duplicates && detail.duplicates.length > 0) {
-        // Kept image: show removed duplicates
         allDups = detail.duplicates;
         groupLabel = "Removed Duplicates (" + allDups.length + ")";
       } else if (detail.removed && detail.duplicate_of) {
-        // Removed image: show the kept image + siblings
-        allDups = [{filename: detail.duplicate_of, url: detail.duplicate_of_url, kept: true}];
+        allDups = [{ filename: detail.duplicate_of, url: detail.duplicate_of_url, kept: true }];
         if (detail.duplicate_siblings) {
-          detail.duplicate_siblings.forEach(function (s) { allDups.push(s); });
+          detail.duplicate_siblings.forEach(function (sibling) { allDups.push(sibling); });
         }
         groupLabel = "Duplicate Group (" + allDups.length + ")";
       }
 
       if (allDups.length > 0) {
-        var html = '<div class="dup-group">';
-        html += '<button class="dup-toggle-btn" onclick="this.parentNode.classList.toggle(\'expanded\')">';
-        html += '<span class="dup-toggle-icon">&#9654;</span> ' + groupLabel + '</button>';
-        html += '<div class="dup-thumbs">';
-        allDups.forEach(function (d) {
-          var badge = d.kept ? '<span class="dup-badge dup-badge-kept">kept</span>' : '';
-          html += '<div class="dup-thumb" title="' + escapeHtml(d.filename) + '">';
-          html += '<img src="' + escapeHtml(d.url) + '" alt="' + escapeHtml(d.filename) + '">';
-          html += badge;
-          html += '<div class="dup-thumb-name">' + escapeHtml(d.filename.length > 20 ? d.filename.substring(0, 18) + '…' : d.filename) + '</div>';
-          html += '</div>';
+        var dupsHtml = '<div class="dup-group">';
+        dupsHtml += '<button class="dup-toggle-btn" type="button" onclick="this.parentNode.classList.toggle(\'expanded\')">';
+        dupsHtml += '<span class="dup-toggle-icon">&#9654;</span> ' + groupLabel + "</button>";
+        dupsHtml += '<div class="dup-thumbs">';
+        allDups.forEach(function (dup) {
+          var badge = dup.kept ? '<span class="dup-badge dup-badge-kept">kept</span>' : "";
+          var name = dup.filename || "";
+          dupsHtml += '<div class="dup-thumb" title="' + escapeHtml(name) + '">';
+          dupsHtml += '<img src="' + escapeHtml(dup.url) + '" alt="' + escapeHtml(name) + '">';
+          dupsHtml += badge;
+          dupsHtml += '<div class="dup-thumb-name">' + escapeHtml(name.length > 20 ? (name.substring(0, 18) + "...") : name) + "</div>";
+          dupsHtml += "</div>";
         });
-        html += '</div></div>';
-        dupsEl.innerHTML = html;
+        dupsHtml += "</div></div>";
+        dupsEl.innerHTML = dupsHtml;
       }
     }
 
-    // Image comparison mode (dedup step)
-    var cmpWrap = document.getElementById("detail-compare-wrap");
+    var cmpWrap = byId("detail-compare-wrap");
     if (cmpWrap && (detail.duplicate_of_url || (detail.duplicates && detail.duplicates.length > 0))) {
       var compareWith = null;
       var compareLabel = "";
@@ -605,342 +938,151 @@
       }
       if (compareWith) {
         var cmpHtml = '<div class="compare-section">';
-        cmpHtml += '<button class="btn btn-small compare-toggle-btn" id="btn-compare-toggle">Compare side-by-side</button>';
+        cmpHtml += '<button class="btn btn-small compare-toggle-btn" id="btn-compare-toggle" type="button">Compare side-by-side</button>';
         cmpHtml += '<div class="compare-view hidden" id="compare-view">';
-        cmpHtml += '<div class="compare-side"><div class="compare-label">Current: ' + escapeHtml(detail.filename) + '</div>';
+        cmpHtml += '<div class="compare-side"><div class="compare-label">Current: ' + escapeHtml(detail.filename) + "</div>";
         cmpHtml += '<img src="' + escapeHtml(detail.url) + '" alt="Current"></div>';
-        cmpHtml += '<div class="compare-side"><div class="compare-label">' + compareLabel + '</div>';
+        cmpHtml += '<div class="compare-side"><div class="compare-label">' + compareLabel + "</div>";
         cmpHtml += '<img src="' + escapeHtml(compareWith) + '" alt="Compare"></div>';
-        cmpHtml += '</div></div>';
+        cmpHtml += "</div></div>";
         cmpWrap.innerHTML = cmpHtml;
 
-        var toggleBtn = document.getElementById("btn-compare-toggle");
-        var compareView = document.getElementById("compare-view");
+        var toggleBtn = byId("btn-compare-toggle");
+        var compareView = byId("compare-view");
         if (toggleBtn && compareView) {
           toggleBtn.addEventListener("click", function () {
             compareView.classList.toggle("hidden");
             toggleBtn.textContent = compareView.classList.contains("hidden")
-              ? "Compare side-by-side" : "Hide comparison";
+              ? "Compare side-by-side"
+              : "Hide comparison";
           });
         }
       }
     }
 
-    // Pre-fill correction form with current labels
-    if (detail.labels) {
-      window.CATEGORIES.forEach(function (cat) {
-        var sel = document.getElementById("corr-" + cat);
-        if (sel) {
-          // If there's an existing correction, show it
-          if (detail.corrections && detail.corrections[cat]) {
-            sel.value = detail.corrections[cat];
-          }
-        }
-      });
-    }
   }
 
-  function updateDetailCounter() {
-    var el = document.getElementById("detail-counter");
-    if (el) {
-      var imgNum = currentIndex + 1;
-      var imgTotal = currentImages.length;
-      var txt = "Image " + imgNum + " / " + imgTotal;
-      if (totalPages > 1) {
-        txt += "  \u00b7  Page " + currentPage + " / " + totalPages;
-      }
-      el.textContent = txt;
-    }
-  }
-
-  function closeDetail() {
-    document.getElementById("detail-overlay").classList.add("hidden");
-    document.body.style.overflow = "";
-    currentIndex = -1;
-    // Reset comparison mode
-    var cmpWrap = document.getElementById("detail-compare-wrap");
-    if (cmpWrap) cmpWrap.innerHTML = "";
-  }
-
-  /* ─── Corrections ───────────────────────────────────────────────────── */
-
-  function saveCorrection(e) {
-    e.preventDefault();
-    var form = document.getElementById("correction-form");
-    var data = {};
-    data.image = document.getElementById("corr-image").value;
-
-    var hasChange = false;
-    window.CATEGORIES.forEach(function (cat) {
-      var sel = document.getElementById("corr-" + cat);
-      if (sel && sel.value) {
-        data[cat] = sel.value;
-        hasChange = true;
-      }
-    });
-
-    var statusEl = document.getElementById("corr-status");
-    if (!hasChange) {
-      statusEl.textContent = "Select at least one label to change.";
-      statusEl.className = "corr-status error";
+  function navigatePrev() {
+    if (state.currentIndex > 0) {
+      openDetail(state.currentIndex - 1, { historyMode: "replace" });
       return;
     }
+    if (state.currentPage <= 1) return;
 
-    fetch("/api/corrections", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    })
-      .then(function (r) { return r.json(); })
-      .then(function (resp) {
-        if (resp.status === "saved") {
-          statusEl.textContent = "Correction saved!";
-          statusEl.className = "corr-status success";
-          // Mark card as corrected
-          if (currentIndex >= 0 && currentImages[currentIndex]) {
-            currentImages[currentIndex].corrected = true;
-            var card = document.querySelector('.image-card[data-idx="' + currentIndex + '"]');
-            if (card) card.classList.add("corrected");
-          }
-        } else {
-          statusEl.textContent = resp.error || "Error saving.";
-          statusEl.className = "corr-status error";
-        }
-      })
-      .catch(function () {
-        statusEl.textContent = "Network error.";
-        statusEl.className = "corr-status error";
-      });
-  }
-
-  function revertCorrection() {
-    var image = document.getElementById("corr-image").value;
-    if (!image) return;
-
-    fetch("/api/corrections/" + encodeURIComponent(image), { method: "DELETE" })
-      .then(function (r) { return r.json(); })
-      .then(function () {
-        var statusEl = document.getElementById("corr-status");
-        statusEl.textContent = "Correction reverted.";
-        statusEl.className = "corr-status success";
-        // Remove corrected class
-        if (currentIndex >= 0 && currentImages[currentIndex]) {
-          currentImages[currentIndex].corrected = false;
-          var card = document.querySelector('.image-card[data-idx="' + currentIndex + '"]');
-          if (card) card.classList.remove("corrected");
-        }
-        // Reset form
-        document.getElementById("correction-form").querySelectorAll(".corr-select").forEach(
-          function (sel) { sel.value = ""; }
-        );
-      });
-  }
-
-  /* ─── Batch selection mode ────────────────────────────────────────── */
-
-  let batchMode = false;
-  let selectedImages = new Set();
-
-  function toggleBatchMode() {
-    batchMode = !batchMode;
-    selectedImages.clear();
-    var btn = document.getElementById("btn-batch-toggle");
-    if (btn) btn.textContent = batchMode ? "Cancel batch" : "Batch select";
-    var batchBar = document.getElementById("batch-bar");
-    if (batchBar) batchBar.classList.toggle("hidden", !batchMode);
-    updateBatchCount();
-    // Toggle checkboxes on existing cards
-    document.querySelectorAll(".image-card").forEach(function (card) {
-      var cb = card.querySelector(".batch-cb");
-      if (batchMode && !cb) {
-        var checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.className = "batch-cb";
-        checkbox.addEventListener("click", function (e) { e.stopPropagation(); });
-        checkbox.addEventListener("change", function () {
-          var idx = parseInt(card.dataset.idx, 10);
-          var img = currentImages[idx];
-          if (img) {
-            if (this.checked) selectedImages.add(img.filename);
-            else selectedImages.delete(img.filename);
-          }
-          updateBatchCount();
-        });
-        card.insertBefore(checkbox, card.firstChild);
-      } else if (!batchMode && cb) {
-        cb.remove();
+    state.currentPage -= 1;
+    loadImages({ historyMode: "replace" }).then(function () {
+      if (state.currentImages.length > 0) {
+        openDetail(state.currentImages.length - 1, { historyMode: "replace" });
       }
     });
   }
 
-  function updateBatchCount() {
-    var el = document.getElementById("batch-count");
-    if (el) el.textContent = selectedImages.size + " selected";
-  }
-
-  function submitBatchCorrection() {
-    if (selectedImages.size === 0) return;
-    var data = { images: Array.from(selectedImages) };
-    var hasChange = false;
-    window.CATEGORIES.forEach(function (cat) {
-      var sel = document.getElementById("batch-" + cat);
-      if (sel && sel.value) {
-        data[cat] = sel.value;
-        hasChange = true;
-      }
-    });
-    var statusEl = document.getElementById("batch-status");
-    if (!hasChange) {
-      if (statusEl) { statusEl.textContent = "Select at least one label."; statusEl.className = "corr-status error"; }
+  function navigateNext() {
+    if (state.currentIndex < state.currentImages.length - 1) {
+      openDetail(state.currentIndex + 1, { historyMode: "replace" });
       return;
     }
-    fetch("/api/corrections/batch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    })
-      .then(function (r) { return r.json(); })
-      .then(function (resp) {
-        if (resp.status === "saved") {
-          if (statusEl) { statusEl.textContent = resp.count + " corrections saved!"; statusEl.className = "corr-status success"; }
-          selectedImages.forEach(function (fn) {
-            currentImages.forEach(function (img, idx) {
-              if (img.filename === fn) {
-                img.corrected = true;
-                var card = document.querySelector('.image-card[data-idx="' + idx + '"]');
-                if (card) card.classList.add("corrected");
-              }
-            });
-          });
-        } else {
-          if (statusEl) { statusEl.textContent = resp.error || "Error."; statusEl.className = "corr-status error"; }
-        }
-      });
+    if (state.currentPage >= state.totalPages) return;
+
+    state.currentPage += 1;
+    loadImages({ historyMode: "replace" }).then(function () {
+      if (state.currentImages.length > 0) {
+        openDetail(0, { historyMode: "replace" });
+      }
+    });
   }
 
-  /* ─── Utilities ─────────────────────────────────────────────────────── */
-
-  function escapeHtml(s) {
-    if (!s) return "";
-    var div = document.createElement("div");
-    div.textContent = String(s);
-    return div.innerHTML;
+  function onPopState() {
+    state.handlingPopstate = true;
+    applyUrlState();
+    loadImages({ historyMode: "replace", openImageFromUrl: true }).finally(function () {
+      state.handlingPopstate = false;
+    });
   }
 
-  function formatCat(cat) {
-    return cat.replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
-  }
-
-  /* ─── Event wiring ──────────────────────────────────────────────────── */
-
-  window.initBrowser = function () {
-    loadImages();
-
-    // Filters
-    var searchInput = document.getElementById("search-input");
+  function wireEvents() {
+    var searchInput = getSearchInput();
     if (searchInput) {
       searchInput.addEventListener("input", function () {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(function () { currentPage = 1; loadImages(); }, 350);
+        clearTimeout(state.debounceTimer);
+        state.debounceTimer = setTimeout(function () {
+          state.currentPage = 1;
+          loadImages({ historyMode: "replace" });
+        }, 300);
       });
     }
 
-    document.querySelectorAll(".filter-select").forEach(function (sel) {
-      sel.addEventListener("change", function () { currentPage = 1; loadImages(); });
+    document.querySelectorAll(".filter-select[data-category]").forEach(function (sel) {
+      sel.addEventListener("change", function () {
+        state.currentPage = 1;
+        loadImages({ historyMode: "push" });
+      });
     });
 
-    var clearBtn = document.getElementById("btn-clear-filters");
+    var perPageSelect = getPerPageSelect();
+    if (perPageSelect) {
+      perPageSelect.addEventListener("change", function () {
+        state.perPage = parsePositiveInt(perPageSelect.value, 60);
+        state.currentPage = 1;
+        loadImages({ historyMode: "push" });
+      });
+    }
+
+    var densitySelect = getDensitySelect();
+    if (densitySelect) {
+      densitySelect.addEventListener("change", function () {
+        state.density = densitySelect.value === "compact" ? "compact" : "comfy";
+        applyDensityClass();
+        syncUrl("push", isOverlayOpen());
+      });
+    }
+
+    var clearBtn = byId("btn-clear-filters");
     if (clearBtn) {
       clearBtn.addEventListener("click", function () {
         if (searchInput) searchInput.value = "";
-        document.querySelectorAll(".filter-select").forEach(function (sel) { sel.value = ""; });
-        currentPage = 1;
-        loadImages();
+        document.querySelectorAll(".filter-select[data-category]").forEach(function (sel) { sel.value = ""; });
+        state.currentPage = 1;
+        loadImages({ historyMode: "push" });
       });
     }
 
-    // Detail panel
-    var closeBtn = document.getElementById("detail-close");
+    var closeBtn = byId("detail-close");
     if (closeBtn) closeBtn.addEventListener("click", closeDetail);
 
-    var overlay = document.getElementById("detail-overlay");
+    var overlay = getOverlay();
     if (overlay) {
-      overlay.addEventListener("click", function (e) {
-        if (e.target === overlay) closeDetail();
+      overlay.addEventListener("click", function (evt) {
+        if (evt.target === overlay) closeDetail();
       });
     }
 
-    // Cross-page navigation helpers
-    function navigatePrev() {
-      if (currentIndex > 0) {
-        openDetail(currentIndex - 1);
-      } else if (currentPage > 1) {
-        currentPage--;
-        loadImagesAndOpen(-1); // -1 = open last image
+    document.addEventListener("keydown", function (evt) {
+      if (!isOverlayOpen()) return;
+      if (evt.key === "Escape") {
+        closeDetail();
+        return;
       }
-    }
-
-    function navigateNext() {
-      if (currentIndex < currentImages.length - 1) {
-        openDetail(currentIndex + 1);
-      } else if (currentPage < totalPages) {
-        currentPage++;
-        loadImagesAndOpen(0); // 0 = open first image
+      trapOverlayFocus(evt);
+      if (evt.target && (evt.target.tagName === "INPUT" || evt.target.tagName === "SELECT" || evt.target.tagName === "TEXTAREA")) {
+        return;
       }
-    }
-
-    function loadImagesAndOpen(targetIdx) {
-      if (!window.STEP_ID) return;
-      fetch("/api/images/" + window.STEP_ID + "?" + buildParams())
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          currentImages = data.images;
-          totalPages = data.pages;
-          renderGrid(data);
-          renderPagination(data);
-          var idx = targetIdx < 0 ? data.images.length - 1 : targetIdx;
-          if (data.images.length > 0) openDetail(idx);
-          updateDetailCounter();
-        });
-    }
-
-    // Keyboard navigation
-    document.addEventListener("keydown", function (e) {
-      if (document.getElementById("detail-overlay").classList.contains("hidden")) return;
-      if (e.key === "Escape") closeDetail();
-      if (e.key === "ArrowLeft") navigatePrev();
-      if (e.key === "ArrowRight") navigateNext();
+      if (evt.key === "ArrowLeft") navigatePrev();
+      if (evt.key === "ArrowRight") navigateNext();
     });
 
-    // Nav buttons
-    var prevBtn = document.getElementById("detail-prev");
-    if (prevBtn) {
-      prevBtn.addEventListener("click", navigatePrev);
-    }
-    var nextBtn = document.getElementById("detail-next");
-    if (nextBtn) {
-      nextBtn.addEventListener("click", navigateNext);
-    }
+    var prevBtn = byId("detail-prev");
+    if (prevBtn) prevBtn.addEventListener("click", navigatePrev);
+    var nextBtn = byId("detail-next");
+    if (nextBtn) nextBtn.addEventListener("click", navigateNext);
 
-    // Correction form
-    var corrForm = document.getElementById("correction-form");
-    if (corrForm) corrForm.addEventListener("submit", saveCorrection);
+    window.addEventListener("popstate", onPopState);
+  }
 
-    var revertBtn = document.getElementById("btn-revert");
-    if (revertBtn) revertBtn.addEventListener("click", revertCorrection);
-
-    // Batch mode
-    var batchToggle = document.getElementById("btn-batch-toggle");
-    if (batchToggle) batchToggle.addEventListener("click", toggleBatchMode);
-    var batchSubmit = document.getElementById("btn-batch-submit");
-    if (batchSubmit) batchSubmit.addEventListener("click", submitBatchCorrection);
-
-    // Export corrections
-    var exportBtn = document.getElementById("btn-export-corrections");
-    if (exportBtn) {
-      exportBtn.addEventListener("click", function () {
-        window.location.href = "/api/corrections/export";
-      });
-    }
+  window.initBrowser = function () {
+    applyUrlState();
+    applyDensityClass();
+    wireEvents();
+    loadImages({ historyMode: "replace", openImageFromUrl: true });
   };
-})();
+}());

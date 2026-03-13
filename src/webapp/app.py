@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import io
 import json
 from pathlib import Path
@@ -18,8 +17,10 @@ from .helpers import (
     build_overlay_score_map,
     build_resize_hash_map,
     build_soil_score_map,
+    compute_filter_metrics,
     extract_source,
     find_raw_original,
+    get_filter_thresholds,
     get_image_dimensions,
     get_rejection_reason,
     get_step,
@@ -27,13 +28,11 @@ from .helpers import (
     list_dedup_removed_images,
     list_images,
     list_rejected_images,
-    load_corrections,
     load_dedup_groups,
     load_full_labels,
     load_labels,
     load_yaml,
     resolve,
-    save_corrections,
 )
 from .stats import compute_step_stats
 
@@ -64,10 +63,79 @@ def create_app(config_dir: Path | None = None) -> Flask:
         for step in STEPS:
             stats = compute_step_stats(step["id"], cfg)
             step_stats.append({**step, "stats": stats})
+
+        funnel_rows = []
+        anomalies = []
+        for idx in range(1, len(step_stats)):
+            prev_step = step_stats[idx - 1]
+            curr_step = step_stats[idx]
+            prev_count = int(prev_step["stats"].get("count", 0))
+            curr_count = int(curr_step["stats"].get("count", 0))
+            conversion_pct = (curr_count / prev_count * 100.0) if prev_count else None
+            drop_pct = (100.0 - conversion_pct) if conversion_pct is not None else None
+            funnel_rows.append(
+                {
+                    "from_name": prev_step["name"],
+                    "to_name": curr_step["name"],
+                    "from_count": prev_count,
+                    "to_count": curr_count,
+                    "conversion_pct": conversion_pct,
+                    "drop_pct": drop_pct,
+                }
+            )
+            if conversion_pct is not None and conversion_pct < 35:
+                anomalies.append(
+                    {
+                        "severity": "high",
+                        "message": (
+                            f"{curr_step['name']} retained only {conversion_pct:.1f}% "
+                            f"of {prev_step['name']} output."
+                        ),
+                    }
+                )
+
+        filter_step = next((s for s in step_stats if s["id"] == "filter"), None)
+        if filter_step:
+            kept = int(filter_step["stats"].get("count", 0))
+            rejected = int(filter_step["stats"].get("rejected_count", 0))
+            total = kept + rejected
+            if total:
+                rejection_rate = rejected / total * 100.0
+                if rejection_rate > 75:
+                    anomalies.append(
+                        {
+                            "severity": "high",
+                            "message": (
+                                f"Filter rejection rate is {rejection_rate:.1f}% "
+                                f"({rejected:,} rejected of {total:,})."
+                            ),
+                        }
+                    )
+
+        dedup_step = next((s for s in step_stats if s["id"] == "dedup"), None)
+        if dedup_step:
+            kept = int(dedup_step["stats"].get("count", 0))
+            removed = int(dedup_step["stats"].get("removed_count", 0))
+            total = kept + removed
+            if total:
+                removed_rate = removed / total * 100.0
+                if removed_rate > 45:
+                    anomalies.append(
+                        {
+                            "severity": "warn",
+                            "message": (
+                                f"Dedup removed {removed_rate:.1f}% "
+                                f"({removed:,} of {total:,}) - review source overlap."
+                            ),
+                        }
+                    )
+
         return render_template(
             "dashboard.html",
             steps=step_stats,
             categories=LABEL_CATEGORIES,
+            funnel_rows=funnel_rows,
+            anomalies=anomalies,
         )
 
     @app.route("/step/<step_id>")
@@ -87,6 +155,7 @@ def create_app(config_dir: Path | None = None) -> Flask:
                     label_options[cat] = sorted(stats["distributions"][cat].keys())
                 else:
                     label_options[cat] = label_options_all.get(cat, [])
+        filter_thresholds = get_filter_thresholds(cfg) if step_id == "filter" else None
 
         return render_template(
             "browser.html",
@@ -97,6 +166,7 @@ def create_app(config_dir: Path | None = None) -> Flask:
             label_options=label_options,
             label_options_all=label_options_all,
             steps=STEPS,
+            filter_thresholds=filter_thresholds,
         )
 
     # ─── Image serving ────────────────────────────────────────────────────
@@ -165,6 +235,9 @@ def create_app(config_dir: Path | None = None) -> Flask:
         search = request.args.get("search", "", type=str).strip().lower()
         reason_filter = request.args.get("reason", "", type=str).strip().lower()
         view = request.args.get("view", "kept", type=str).strip().lower()
+        decision_band = request.args.get("decision_band", "", type=str).strip().lower()
+        failure_mode = request.args.get("failure_mode", "", type=str).strip().lower()
+        nearest_boundary = request.args.get("nearest_boundary", "", type=str).strip().lower()
 
         # Label filters
         filters = {}
@@ -178,6 +251,15 @@ def create_app(config_dir: Path | None = None) -> Flask:
             images = list_rejected_images(cfg)
             soil_map = build_soil_score_map(cfg)
             overlay_map = build_overlay_score_map(cfg)
+            thresholds = get_filter_thresholds(cfg)
+            metrics_cache: dict[str, dict] = {}
+
+            def metrics_for(fn: str) -> dict:
+                if fn not in metrics_cache:
+                    metrics_cache[fn] = compute_filter_metrics(
+                        fn, soil_map, overlay_map, thresholds
+                    )
+                return metrics_cache[fn]
 
             source_filter = request.args.get("source", "", type=str).strip().lower()
             if source_filter:
@@ -187,6 +269,18 @@ def create_app(config_dir: Path | None = None) -> Flask:
                 images = [
                     fn for fn in images
                     if get_rejection_reason(fn, soil_map, overlay_map)["reason"] == reason_filter
+                ]
+
+            if failure_mode:
+                images = [
+                    fn for fn in images
+                    if metrics_for(fn).get("rejection_mode") == failure_mode
+                ]
+
+            if decision_band:
+                images = [
+                    fn for fn in images
+                    if metrics_for(fn).get("decision_band") == decision_band
                 ]
 
             if search:
@@ -199,12 +293,14 @@ def create_app(config_dir: Path | None = None) -> Flask:
             results = []
             for img in page_images:
                 reason_info = get_rejection_reason(img, soil_map, overlay_map)
+                metrics = metrics_for(img)
                 entry = {
                     "filename": img,
                     "url": f"/images/filter/{img}?view=rejected",
                     "thumb_url": f"/thumbnails/filter/{img}?view=rejected",
                     "rejection": reason_info,
                     "source": extract_source(img),
+                    "filter_metrics": metrics,
                 }
                 results.append(entry)
 
@@ -214,6 +310,7 @@ def create_app(config_dir: Path | None = None) -> Flask:
                 "page": page,
                 "per_page": per_page,
                 "pages": max(1, (total + per_page - 1) // per_page),
+                "thresholds": thresholds,
             })
 
         # Dedup step: removed view
@@ -271,12 +368,35 @@ def create_app(config_dir: Path | None = None) -> Flask:
         # Filter kept view: overlay status filter
         if step_id == "filter" and view == "kept":
             wm_filter = request.args.get("watermark", "", type=str).strip().lower()
+            soil_map = build_soil_score_map(cfg)
+            wm_map = build_overlay_score_map(cfg)
+            thresholds = get_filter_thresholds(cfg)
+            metrics_cache: dict[str, dict] = {}
+
+            def metrics_for(fn: str) -> dict:
+                if fn not in metrics_cache:
+                    metrics_cache[fn] = compute_filter_metrics(
+                        fn, soil_map, wm_map, thresholds
+                    )
+                return metrics_cache[fn]
+
             if wm_filter:
-                wm_map = build_overlay_score_map(cfg)
                 if wm_filter == "flagged":
                     images = [img for img in images if wm_map.get(img, {}).get("flagged", "").lower() == "true"]
                 elif wm_filter == "clean":
                     images = [img for img in images if wm_map.get(img, {}).get("flagged", "").lower() != "true"]
+
+            if nearest_boundary:
+                images = [
+                    img for img in images
+                    if metrics_for(img).get("nearest_boundary") == nearest_boundary
+                ]
+
+            if decision_band:
+                images = [
+                    img for img in images
+                    if metrics_for(img).get("decision_band") == decision_band
+                ]
 
         if search:
             images = [img for img in images if search in img.lower()]
@@ -291,8 +411,6 @@ def create_app(config_dir: Path | None = None) -> Flask:
         start = (page - 1) * per_page
         page_images = images[start : start + per_page]
 
-        corrections_map = {c["image"]: c for c in load_corrections(cfg)}
-
         results = []
         for img in page_images:
             entry = {
@@ -303,11 +421,12 @@ def create_app(config_dir: Path | None = None) -> Flask:
             # Add source for filter, dedup, label steps
             if step_id in ("filter", "dedup", "label"):
                 entry["source"] = extract_source(img)
+            if step_id == "filter":
+                if "metrics_for" in locals():
+                    entry["filter_metrics"] = metrics_for(img)
             if labels:
                 lbl = labels.get(img, {})
                 entry["labels"] = {cat: lbl.get(cat, "") for cat in LABEL_CATEGORIES}
-                if img in corrections_map:
-                    entry["corrected"] = True
             results.append(entry)
 
         return jsonify({
@@ -388,19 +507,14 @@ def create_app(config_dir: Path | None = None) -> Flask:
             if "scores" in full_entry:
                 result["scores"] = full_entry["scores"]
 
-            corrections = load_corrections(cfg)
-            for c in corrections:
-                if c["image"] == filename:
-                    result["corrected"] = not c.get("_correct", True)
-                    if result["corrected"]:
-                        result["corrections"] = {
-                            cat: c.get(cat, "") for cat in LABEL_CATEGORIES
-                        }
-                    break
-
         if step_id == "filter":
             score_map = build_soil_score_map(cfg)
             overlay_map = build_overlay_score_map(cfg)
+            thresholds = get_filter_thresholds(cfg)
+            result["thresholds"] = thresholds
+            result["filter_metrics"] = compute_filter_metrics(
+                filename, score_map, overlay_map, thresholds
+            )
             if filename in score_map:
                 result["soil_scores"] = score_map[filename]
             if filename in overlay_map:
@@ -412,120 +526,6 @@ def create_app(config_dir: Path | None = None) -> Flask:
                 result["url"] = f"/images/filter/{filename}?view=rejected"
 
         return jsonify(result)
-
-    # ─── Correction routes ────────────────────────────────────────────────
-
-    @app.route("/api/corrections", methods=["GET"])
-    def get_corrections():
-        return jsonify(load_corrections(cfg))
-
-    @app.route("/api/corrections", methods=["POST"])
-    def save_correction():
-        data = request.get_json()
-        if not data or "image" not in data:
-            return jsonify({"error": "Missing image field"}), 400
-
-        image = str(data["image"])
-        new_labels = {}
-        for cat in LABEL_CATEGORIES:
-            val = data.get(cat)
-            if isinstance(val, str) and val.strip():
-                # Validate against allowed options
-                if val.strip() in label_options_all.get(cat, []):
-                    new_labels[cat] = val.strip()
-
-        if not new_labels:
-            return jsonify({"error": "No valid label changes provided"}), 400
-
-        corrections = load_corrections(cfg)
-
-        # Update existing or create new correction entry
-        found = False
-        for c in corrections:
-            if c["image"] == image:
-                c.update(new_labels)
-                c["_correct"] = False
-                found = True
-                break
-
-        if not found:
-            # Fill unchanged fields from the latest labels
-            labels = load_labels("label", cfg)
-            original = labels.get(image, {})
-            correction = {"image": image, "_correct": False}
-            for cat in LABEL_CATEGORIES:
-                correction[cat] = new_labels.get(cat, original.get(cat, ""))
-            corrections.append(correction)
-
-        save_corrections(cfg, corrections)
-        return jsonify({"status": "saved", "image": image})
-
-    @app.route("/api/corrections/<path:image>", methods=["DELETE"])
-    def delete_correction(image):
-        corrections = load_corrections(cfg)
-        corrections = [c for c in corrections if c["image"] != image]
-        save_corrections(cfg, corrections)
-        return jsonify({"status": "deleted", "image": image})
-
-    # ─── Batch corrections ────────────────────────────────────────────────
-
-    @app.route("/api/corrections/batch", methods=["POST"])
-    def batch_corrections():
-        """Apply the same label corrections to multiple images at once."""
-        data = request.get_json()
-        if not data or "images" not in data or not isinstance(data["images"], list):
-            return jsonify({"error": "Missing images array"}), 400
-
-        images = [str(img) for img in data["images"] if isinstance(img, str)]
-        if not images:
-            return jsonify({"error": "No valid image names"}), 400
-
-        new_labels = {}
-        for cat in LABEL_CATEGORIES:
-            val = data.get(cat)
-            if isinstance(val, str) and val.strip():
-                if val.strip() in label_options_all.get(cat, []):
-                    new_labels[cat] = val.strip()
-
-        if not new_labels:
-            return jsonify({"error": "No valid label changes provided"}), 400
-
-        corrections = load_corrections(cfg)
-        corrections_map = {c["image"]: c for c in corrections}
-        labels = load_labels("label", cfg)
-
-        for image in images:
-            if image in corrections_map:
-                corrections_map[image].update(new_labels)
-                corrections_map[image]["_correct"] = False
-            else:
-                original = labels.get(image, {})
-                correction = {"image": image, "_correct": False}
-                for cat in LABEL_CATEGORIES:
-                    correction[cat] = new_labels.get(cat, original.get(cat, ""))
-                corrections_map[image] = correction
-
-        save_corrections(cfg, list(corrections_map.values()))
-        return jsonify({"status": "saved", "count": len(images)})
-
-    # ─── Export corrections as CSV ────────────────────────────────────────
-
-    @app.route("/api/corrections/export")
-    def export_corrections_csv():
-        """Download all corrections as a CSV file."""
-        corrections = load_corrections(cfg)
-        output = io.StringIO()
-        fieldnames = ["image", "_correct"] + list(LABEL_CATEGORIES)
-        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        for c in corrections:
-            writer.writerow(c)
-        csv_data = output.getvalue()
-        return Response(
-            csv_data,
-            mimetype="text/csv",
-            headers={"Content-Disposition": "attachment; filename=corrections.csv"},
-        )
 
     # ─── Evaluation / annotation routes ───────────────────────────────────
 
@@ -559,13 +559,13 @@ def create_app(config_dir: Path | None = None) -> Flask:
         image = str(data["image"])
         is_soil = data.get("is_soil")
 
-        # Build ground truth labels (only for accepted soil images)
-        ground_truth = {}
+        # Collect explicitly provided labels (validated against prompt options)
+        provided_labels: dict[str, str] = {}
         for cat in LABEL_CATEGORIES:
             val = data.get(cat)
             if isinstance(val, str) and val.strip():
                 if val.strip() in label_options_all.get(cat, []):
-                    ground_truth[cat] = val.strip()
+                    provided_labels[cat] = val.strip()
 
         # Load sample, update annotation, save
         eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
@@ -578,8 +578,29 @@ def create_app(config_dir: Path | None = None) -> Flask:
         for s in samples:
             if s["image"] == image:
                 s["is_soil"] = is_soil
-                if ground_truth:
-                    s["ground_truth"] = ground_truth
+
+                if is_soil is True:
+                    # Start from predicted labels when valid, then override with user input.
+                    predicted = s.get("predicted") if isinstance(s.get("predicted"), dict) else {}
+                    resolved_ground_truth: dict[str, str] = {}
+                    for cat in LABEL_CATEGORIES:
+                        pred_val = str(predicted.get(cat, "")).strip()
+                        if pred_val in label_options_all.get(cat, []):
+                            resolved_ground_truth[cat] = pred_val
+                        if cat in provided_labels:
+                            resolved_ground_truth[cat] = provided_labels[cat]
+
+                    missing = [cat for cat in LABEL_CATEGORIES if not resolved_ground_truth.get(cat)]
+                    if missing:
+                        return jsonify({
+                            "error": (
+                                "Missing class labels for soil image: "
+                                + ", ".join(missing)
+                            )
+                        }), 400
+                    s["ground_truth"] = resolved_ground_truth
+                else:
+                    s.pop("ground_truth", None)
                 found = True
                 break
 
@@ -608,3 +629,4 @@ def create_app(config_dir: Path | None = None) -> Flask:
         return "Image not found", 404
 
     return app
+

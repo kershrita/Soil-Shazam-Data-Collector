@@ -21,6 +21,12 @@
     Rejected <span class="toggle-count">{{ "{:,}".format(stats.rejected_count|default(0)) }}</span>
   </a>
 </div>
+{% if filter_thresholds %}
+<p class="subtitle filter-rules-note">
+  Rule split: keep if positive &ge; {{ "%.3f"|format(filter_thresholds.soil_threshold) }} and positive &gt; negative.
+  Reject as overlay if (overlay - clean) &gt; {{ "%.3f"|format(filter_thresholds.overlay_margin) }}.
+</p>
+{% endif %}
 {% endif %}
 
 {% if step.id == "dedup" %}
@@ -47,6 +53,15 @@
 <!-- Filter bar -->
 <div class="filter-bar">
   <input type="text" id="search-input" placeholder="Search filename..." class="search-input">
+  <select id="per-page-select" class="filter-select filter-select-small">
+    <option value="30">30 / page</option>
+    <option value="60" selected>60 / page</option>
+    <option value="120">120 / page</option>
+  </select>
+  <select id="density-select" class="filter-select filter-select-small">
+    <option value="comfy" selected>Comfy grid</option>
+    <option value="compact">Compact grid</option>
+  </select>
   {% if step.id == "download" %}
   <select id="filter-source" class="filter-select" data-category="source">
     <option value="">All sources</option>
@@ -69,11 +84,33 @@
     {% endfor %}
   </select>
   {% endif %}
+  {% if step.id == "filter" %}
+  <select id="filter-decision-band" class="filter-select" data-category="decision_band">
+    <option value="">All confidence bands</option>
+    <option value="borderline">Borderline (&lt; 0.03 margin)</option>
+    <option value="moderate">Moderate (0.03-0.08)</option>
+    <option value="clear">Clear (&ge; 0.08 margin)</option>
+  </select>
+  {% endif %}
   {% if step.id == "filter" and view == "rejected" %}
   <select id="filter-reason" class="filter-select" data-category="reason">
     <option value="">All reasons</option>
     <option value="low_soil_score">Low soil score ({{ stats.rejection_reasons.low_soil_score|default(0) }})</option>
     <option value="overlay">Overlay ({{ stats.rejection_reasons.overlay|default(0) }})</option>
+  </select>
+  <select id="filter-failure-mode" class="filter-select" data-category="failure_mode">
+    <option value="">All failed boundaries</option>
+    <option value="overlay_margin">Failed overlay margin</option>
+    <option value="soil_threshold">Failed soil threshold</option>
+    <option value="soil_vs_negative">Failed positive &gt; negative</option>
+  </select>
+  {% endif %}
+  {% if step.id == "filter" and view == "kept" %}
+  <select id="filter-nearest-boundary" class="filter-select" data-category="nearest_boundary">
+    <option value="">Any nearest boundary</option>
+    <option value="soil_threshold">Nearest to soil threshold</option>
+    <option value="soil_vs_negative">Nearest to positive-vs-negative</option>
+    <option value="overlay_margin">Nearest to overlay margin</option>
   </select>
   {% endif %}
   {% if step.has_labels and label_options %}
@@ -89,35 +126,16 @@
     {% endfor %}
   {% endif %}
   <button id="btn-clear-filters" class="btn btn-small">Clear</button>
-  {% if step.has_labels %}
-  <button id="btn-batch-toggle" class="btn btn-small">Batch select</button>
-  <button id="btn-export-corrections" class="btn btn-small">Export CSV</button>
-  {% endif %}
 </div>
-
-{% if step.has_labels %}
-<!-- Batch correction bar -->
-<div id="batch-bar" class="batch-bar hidden">
-  <span id="batch-count" class="batch-count">0 selected</span>
-  {% for cat in categories %}
-  <select id="batch-{{ cat }}" class="corr-select batch-select">
-    <option value="">{{ cat.replace('_', ' ').title() }}</option>
-    {% for opt in label_options_all.get(cat, []) %}
-    <option value="{{ opt }}">{{ opt }}</option>
-    {% endfor %}
-  </select>
-  {% endfor %}
-  <button id="btn-batch-submit" class="btn btn-primary btn-small">Apply to selected</button>
-  <span id="batch-status" class="corr-status"></span>
-</div>
-{% endif %}
+<div id="active-filters" class="active-filters" aria-live="polite"></div>
+<div id="results-summary" class="results-summary" aria-live="polite"></div>
 
 <!-- Image grid (loaded via JS) -->
 <div id="image-grid" class="image-grid"></div>
 
 <!-- Grid card template -->
 <template id="tpl-image-card">
-  <div class="image-card">
+  <div class="image-card" role="button" tabindex="0">
     <img loading="lazy" alt="">
     <div class="image-card-info">
       <div class="image-card-name"></div>
@@ -133,9 +151,10 @@
 <div id="pagination" class="pagination"></div>
 
 <!-- Image detail panel -->
-<div id="detail-overlay" class="detail-overlay hidden">
-  <div class="detail-panel">
-    <button id="detail-close" class="detail-close">&times;</button>
+<div id="detail-overlay" class="detail-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="detail-filename">
+  <div class="detail-panel" tabindex="-1">
+    <button id="detail-close" class="detail-close" aria-label="Close detail panel">&times;</button>
+    <div id="detail-loading" class="detail-loading hidden" aria-live="polite">Loading details...</div>
     <div class="detail-content">
       <div class="detail-info">
         <h3 id="detail-filename"></h3>
@@ -152,39 +171,13 @@
         <div id="detail-compare-wrap"></div>
         <div id="detail-scores" class="detail-scores"></div>
         <div id="detail-soil-scores" class="detail-soil-scores"></div>
-
-        {% if step.has_labels %}
-        <div class="detail-edit">
-          <h4>Correct Labels</h4>
-          <form id="correction-form" class="correction-form">
-            <input type="hidden" id="corr-image" name="image">
-            {% for cat in categories %}
-            <div class="form-row">
-              <label for="corr-{{ cat }}">{{ cat.replace('_', ' ').title() }}</label>
-              <select id="corr-{{ cat }}" name="{{ cat }}" class="corr-select">
-                <option value="">— keep —</option>
-                {% for opt in label_options_all.get(cat, []) %}
-                <option value="{{ opt }}">{{ opt }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            {% endfor %}
-            <div class="form-actions">
-              <button type="submit" class="btn btn-primary">Save Correction</button>
-              <button type="button" id="btn-revert" class="btn btn-danger">Revert</button>
-            </div>
-          </form>
-          <div id="corr-status" class="corr-status"></div>
-        </div>
-        {% endif %}
-
       </div>
     </div>
     <!-- Navigation footer -->
     <div class="detail-nav">
-      <button id="detail-prev" class="btn btn-small">&larr; Prev</button>
+      <button id="detail-prev" class="btn btn-small" aria-label="Previous image">&larr; Prev</button>
       <span id="detail-counter" class="detail-counter"></span>
-      <button id="detail-next" class="btn btn-small">Next &rarr;</button>
+      <button id="detail-next" class="btn btn-small" aria-label="Next image">Next &rarr;</button>
     </div>
   </div>
 </div>
@@ -203,3 +196,4 @@
   if (_dc && window.DISTRIBUTIONS) window.renderDistributionChart(_dc, window.DISTRIBUTIONS, window.REMOVED_DISTRIBUTIONS);
 </script>
 {% endblock %}
+

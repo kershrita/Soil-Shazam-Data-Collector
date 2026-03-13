@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -233,6 +235,15 @@ def filter(
         threshold=soil_threshold,
         flagged_stems=overlay_stems,
     )
+
+    # Persist actual thresholds used for this filter run (UI can read these later).
+    run_cfg_path = logs_dir / "filter_run_config.json"
+    run_cfg = {
+        "soil_threshold": float(soil_threshold),
+        "overlay_margin": float(filter_cfg["overlay_margin"]),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    run_cfg_path.write_text(json.dumps(run_cfg, indent=2), encoding="utf-8")
 
 
 # ─── LABEL ───────────────────────────────────────────────────────────────────

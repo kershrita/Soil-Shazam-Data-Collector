@@ -49,13 +49,17 @@ def compute_metrics(eval_dir: Path) -> dict:
     # --- Filter metrics ---
     metrics["filter"] = _compute_filter_metrics(accepted, rejected)
 
-    # --- Label accuracy (only for accepted images confirmed as soil) ---
-    soil_accepted = [s for s in accepted if s["is_soil"] is True and s.get("ground_truth")]
-    if soil_accepted:
-        metrics["labels"] = _compute_label_metrics(soil_accepted)
-        metrics["calibration"] = _compute_calibration(soil_accepted)
+    # --- Label accuracy (soil-confirmed samples that also have predictions) ---
+    soil_confirmed = [s for s in samples if s.get("is_soil") is True and s.get("ground_truth")]
+    label_eval_samples = [
+        s for s in soil_confirmed
+        if isinstance(s.get("predicted"), dict) and s.get("predicted")
+    ]
+    if label_eval_samples:
+        metrics["labels"] = _compute_label_metrics(label_eval_samples)
+        metrics["calibration"] = _compute_calibration(label_eval_samples)
     else:
-        logger.warning("No soil-confirmed accepted samples with ground truth labels")
+        logger.warning("No soil-confirmed samples with both predictions and ground truth labels")
         metrics["labels"] = {}
         metrics["calibration"] = {}
 
@@ -65,7 +69,9 @@ def compute_metrics(eval_dir: Path) -> dict:
         "total_annotated": len(accepted) + len(rejected),
         "accepted_annotated": len(accepted),
         "rejected_annotated": len(rejected),
-        "soil_confirmed": len(soil_accepted) if soil_accepted else 0,
+        "soil_confirmed": len(soil_confirmed),
+        "soil_confirmed_with_predictions": len(label_eval_samples),
+        "soil_confirmed_without_predictions": len(soil_confirmed) - len(label_eval_samples),
     }
 
     # Save metrics
@@ -139,8 +145,8 @@ def _compute_label_metrics(samples: list[dict]) -> dict:
         per_label_total: Counter = Counter()
 
         for s in samples:
-            pred = s["predicted"].get(cat)
-            gt = s["ground_truth"].get(cat)
+            pred = (s.get("predicted") or {}).get(cat)
+            gt = (s.get("ground_truth") or {}).get(cat)
             if pred is None or gt is None:
                 continue
 
@@ -205,8 +211,8 @@ def _compute_calibration(samples: list[dict]) -> dict:
         bin_total = [0] * len(bins)
 
         for s in samples:
-            pred = s["predicted"].get(cat)
-            gt = s["ground_truth"].get(cat)
+            pred = (s.get("predicted") or {}).get(cat)
+            gt = (s.get("ground_truth") or {}).get(cat)
             conf = (s.get("confidence") or {}).get(cat)
 
             if pred is None or gt is None or conf is None:

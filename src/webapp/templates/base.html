@@ -12,11 +12,16 @@
     <a href="/" class="topbar-brand">Soil Pipeline Validator</a>
     <div class="topbar-steps">
       {% for s in steps|default([]) %}
+      {% set _sid = s.id if s.id is defined else s['id'] %}
       <a href="/step/{{ s.id if s.id is defined else s['id'] }}"
-         class="topbar-step {% if step is defined and step.id == (s.id if s.id is defined else s['id']) %}active{% endif %}">
+         class="topbar-step {% if step is defined and step.id == _sid %}active{% endif %}">
         {{ s.name if s.name is defined else s['name'] }}
       </a>
       {% endfor %}
+      <a href="/annotate"
+         class="topbar-step topbar-step-accent {% if request.path.startswith('/annotate') %}active{% endif %}">
+        Evaluate
+      </a>
     </div>
   </nav>
 

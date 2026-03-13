@@ -65,6 +65,11 @@ def _header(lines: list[str], metrics: dict):
     lines.append(f"| Total images annotated | {sample.get('total_annotated', 0)} |")
     lines.append(f"| Accepted images evaluated | {sample.get('accepted_annotated', 0)} |")
     lines.append(f"| Rejected images evaluated | {sample.get('rejected_annotated', 0)} |")
+    lines.append(f"| Soil-confirmed images | {sample.get('soil_confirmed', 0)} |")
+    lines.append(
+        f"| Label-evaluated images (with predictions) | "
+        f"{sample.get('soil_confirmed_with_predictions', 0)} |"
+    )
     lines.append("")
 
 
@@ -108,6 +113,7 @@ def _label_section(lines: list[str], metrics: dict):
     lines.append("## Label Accuracy by Category")
     lines.append("")
     lines.append("Per-category accuracy of CLIP-assigned labels vs human ground truth.")
+    lines.append("Only soil-confirmed samples with available model predictions are counted.")
     lines.append("")
     lines.append("| Category | Accuracy | Correct / Total |")
     lines.append("|----------|----------|-----------------|")
@@ -231,6 +237,10 @@ def _methodology_section(lines: list[str], metrics: dict):
     lines.append(f"- **Accepted images annotated**: {sample.get('accepted_annotated', 0)} "
                  f"(confirmed as soil: {sample.get('soil_confirmed', 0)})")
     lines.append(f"- **Rejected images annotated**: {sample.get('rejected_annotated', 0)}")
+    lines.append(
+        f"- **Label-evaluable soil samples**: {sample.get('soil_confirmed_with_predictions', 0)} "
+        f"(soil without model predictions: {sample.get('soil_confirmed_without_predictions', 0)})"
+    )
     lines.append("- **Ground truth**: Human expert annotation via the pipeline's evaluation UI")
     lines.append("- **Label accuracy**: Measured as exact match between CLIP prediction and human label")
     lines.append("- **Filter metrics**: Precision = TP/(TP+FP), Recall = TP/(TP+FN)")

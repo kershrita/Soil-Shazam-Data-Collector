@@ -212,25 +212,157 @@ def load_filter_log(cfg: dict, log_name: str) -> list[dict]:
         return list(reader)
 
 
-def corrections_path(cfg: dict) -> Path:
-    dataset_dir = resolve(cfg["paths"]["dataset"])
-    return dataset_dir / "verification" / "corrections.json"
+def _parse_float(value) -> float | None:
+    try:
+        if value is None:
+            return None
+        s = str(value).strip()
+        if not s or s.lower() in {"n/a", "nan", "none"}:
+            return None
+        return float(s)
+    except (TypeError, ValueError):
+        return None
 
 
-def load_corrections(cfg: dict) -> list[dict]:
-    path = corrections_path(cfg)
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return []
+def get_filter_thresholds(cfg: dict) -> dict[str, object]:
+    """Return thresholds used by filter logic, preferring runtime metadata when present."""
+    cache_key = "filter_thresholds"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    filter_cfg = cfg.get("filter", {})
+    soil_threshold = float(filter_cfg.get("soil_threshold", 0.3))
+    overlay_margin = float(filter_cfg.get("overlay_margin", 0.07))
+    source = "config"
+    run_ts = None
+
+    logs_dir = resolve(cfg["paths"]["logs"])
+    meta_path = logs_dir / "filter_run_config.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            soil_meta = _parse_float(meta.get("soil_threshold"))
+            overlay_meta = _parse_float(meta.get("overlay_margin"))
+            if soil_meta is not None:
+                soil_threshold = soil_meta
+            if overlay_meta is not None:
+                overlay_margin = overlay_meta
+            source = "run_metadata"
+            run_ts = meta.get("generated_at")
+        except (json.JSONDecodeError, OSError, TypeError):
+            pass
+
+    result = {
+        "soil_threshold": soil_threshold,
+        "overlay_margin": overlay_margin,
+        "source": source,
+        "generated_at": run_ts,
+    }
+    cache.set(cache_key, result)
+    return result
 
 
-def save_corrections(cfg: dict, corrections: list[dict]):
-    path = corrections_path(cfg)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(corrections, indent=2, ensure_ascii=False), encoding="utf-8"
+def compute_filter_metrics(
+    filename: str,
+    soil_map: dict[str, dict],
+    overlay_map: dict[str, dict],
+    thresholds: dict[str, object],
+) -> dict[str, object]:
+    """Compute rule-based filter margins and decision metadata for one image."""
+    soil = soil_map.get(filename, {})
+    ov = overlay_map.get(filename, {})
+
+    soil_threshold = float(thresholds.get("soil_threshold", 0.3))
+    overlay_margin = float(thresholds.get("overlay_margin", 0.07))
+
+    pos = _parse_float(soil.get("positive"))
+    neg = _parse_float(soil.get("negative"))
+    ov_score = _parse_float(ov.get("overlay_score"))
+    clean_score = _parse_float(ov.get("clean_score"))
+    flagged_txt = str(ov.get("flagged", "")).strip().lower()
+    flagged_by_log = flagged_txt == "true"
+
+    overlay_delta = None
+    if ov_score is not None and clean_score is not None:
+        overlay_delta = ov_score - clean_score
+
+    overlay_fail = (overlay_delta is not None and overlay_delta > overlay_margin) or flagged_by_log
+    soil_threshold_fail = pos is not None and pos < soil_threshold
+    soil_vs_negative_fail = pos is not None and neg is not None and pos <= neg
+
+    kept_by_rule = (
+        not overlay_fail
+        and pos is not None
+        and neg is not None
+        and pos >= soil_threshold
+        and pos > neg
     )
 
+    rejection_mode = "unknown"
+    if overlay_fail:
+        rejection_mode = "overlay_margin"
+    elif soil_threshold_fail and soil_vs_negative_fail:
+        threshold_deficit = soil_threshold - (pos or 0.0)
+        gap_deficit = (neg or 0.0) - (pos or 0.0)
+        rejection_mode = "soil_vs_negative" if gap_deficit >= threshold_deficit else "soil_threshold"
+    elif soil_threshold_fail:
+        rejection_mode = "soil_threshold"
+    elif soil_vs_negative_fail:
+        rejection_mode = "soil_vs_negative"
+
+    decision_distance = None
+    nearest_boundary = "unknown"
+    if kept_by_rule:
+        distances: list[tuple[str, float]] = []
+        if pos is not None:
+            distances.append(("soil_threshold", pos - soil_threshold))
+        if pos is not None and neg is not None:
+            distances.append(("soil_vs_negative", pos - neg))
+        if overlay_delta is not None:
+            distances.append(("overlay_margin", overlay_margin - overlay_delta))
+        if distances:
+            nearest_boundary, decision_distance = min(distances, key=lambda x: x[1])
+    else:
+        fail_distances: list[tuple[str, float]] = []
+        if overlay_fail and overlay_delta is not None:
+            fail_distances.append(("overlay_margin", overlay_delta - overlay_margin))
+        if soil_threshold_fail and pos is not None:
+            fail_distances.append(("soil_threshold", soil_threshold - pos))
+        if soil_vs_negative_fail and pos is not None and neg is not None:
+            fail_distances.append(("soil_vs_negative", neg - pos))
+        if fail_distances:
+            nearest_boundary, decision_distance = max(fail_distances, key=lambda x: x[1])
+
+    decision_band = "unknown"
+    if decision_distance is not None:
+        if decision_distance < 0.03:
+            decision_band = "borderline"
+        elif decision_distance < 0.08:
+            decision_band = "moderate"
+        else:
+            decision_band = "clear"
+
+    return {
+        "soil_positive": pos,
+        "soil_negative": neg,
+        "overlay_score": ov_score,
+        "clean_score": clean_score,
+        "soil_threshold": soil_threshold,
+        "overlay_margin": overlay_margin,
+        "soil_margin": (pos - soil_threshold) if pos is not None else None,
+        "soil_gap": (pos - neg) if (pos is not None and neg is not None) else None,
+        "overlay_delta": overlay_delta,
+        "overlay_margin_gap": (overlay_margin - overlay_delta) if overlay_delta is not None else None,
+        "overlay_fail": overlay_fail,
+        "soil_threshold_fail": soil_threshold_fail,
+        "soil_vs_negative_fail": soil_vs_negative_fail,
+        "kept_by_rule": kept_by_rule,
+        "rejection_mode": rejection_mode,
+        "nearest_boundary": nearest_boundary,
+        "decision_distance": decision_distance,
+        "decision_band": decision_band,
+    }
 
 def build_soil_score_map(cfg: dict) -> dict[str, dict]:
     """Build {filename: {positive, negative, kept}} from soil_filter.csv."""
@@ -360,3 +492,4 @@ def get_rejection_reason(filename: str, soil_map: dict, overlay_map: dict) -> di
         result["kept"] = soil.get("kept", "")
 
     return result
+
