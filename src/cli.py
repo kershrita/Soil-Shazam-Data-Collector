@@ -11,7 +11,7 @@ from typing import Optional
 import typer
 import yaml
 
-from .utils import setup_logging
+from utils import setup_logging
 
 app = typer.Typer(
     name="soil-shazam-data-collector",
@@ -88,7 +88,7 @@ def download(
     raw_dir = _resolve_path(cfg["paths"]["raw"])
 
     # Build downloaders
-    from .downloader import BingDownloader, FlickrDownloader, GoogleDownloader
+    from downloader import BingDownloader, FlickrDownloader, GoogleDownloader
 
     downloaders = []
     if source in ("all", "bing"):
@@ -164,7 +164,7 @@ def resize(
     raw_dir = _resolve_path(cfg["paths"]["raw"])
     resized_dir = _resolve_path(cfg["paths"]["resized"])
 
-    from .filtering import run_resolution_filter
+    from filtering import run_resolution_filter
 
     run_resolution_filter(
         input_dir=raw_dir,
@@ -201,7 +201,7 @@ def filter(
     soil_threshold = threshold if threshold > 0 else filter_cfg["soil_threshold"]
 
     # Load CLIP model
-    from .utils import get_clip_model
+    from utils import get_clip_model
 
     clip_model = get_clip_model(
         model_name=clip_cfg["model_name"],
@@ -211,7 +211,7 @@ def filter(
     )
 
     # Stage 1: Overlay detection (watermarks + text)
-    from .filtering import run_overlay_filter
+    from filtering import run_overlay_filter
 
     overlay_stems = run_overlay_filter(
         input_dir=deduped_dir,
@@ -223,7 +223,7 @@ def filter(
     )
 
     # Stage 2: Soil filtering
-    from .filtering import run_clip_filter
+    from filtering import run_clip_filter
 
     run_clip_filter(
         input_dir=deduped_dir,
@@ -264,7 +264,7 @@ def label(
     filtered_dir = _resolve_path(cfg["paths"]["filtered"])
     labeled_dir = _resolve_path(cfg["paths"]["labeled"])
 
-    from .utils import get_clip_model
+    from utils import get_clip_model
 
     clip_model = get_clip_model(
         model_name=clip_cfg["model_name"],
@@ -273,7 +273,7 @@ def label(
         batch_size=clip_cfg["batch_size"],
     )
 
-    from .labeling import run_clip_labeling
+    from labeling import run_clip_labeling
 
     run_clip_labeling(
         input_dir=filtered_dir,
@@ -300,7 +300,7 @@ def dedup(
     resized_dir = _resolve_path(cfg["paths"]["resized"])
     deduped_dir = _resolve_path(cfg["paths"]["deduped"])
 
-    from .dedup import run_deduplication
+    from dedup import run_deduplication
 
     run_deduplication(
         input_dir=resized_dir,
@@ -326,7 +326,7 @@ def export(
     dataset_dir = _resolve_path(cfg["paths"]["dataset"])
     corrections_path = dataset_dir / "verification" / "corrections.json"
 
-    from .export import run_export
+    from export import run_export
 
     run_export(
         input_dir=labeled_dir,
@@ -402,7 +402,7 @@ def eval_sample(
     dataset_dir = _resolve_path(cfg["paths"]["dataset"])
     eval_dir = dataset_dir.parent / "evaluation"
 
-    from .evaluation import create_eval_sample
+    from evaluation import create_eval_sample
 
     sample_path = create_eval_sample(
         dataset_dir=dataset_dir,
@@ -427,7 +427,7 @@ def eval_report(
     cfg = _get_config(config_dir)
     eval_dir = _resolve_path(cfg["paths"]["dataset"]).parent / "evaluation"
 
-    from .evaluation import compute_metrics, generate_report
+    from evaluation import compute_metrics, generate_report
 
     metrics = compute_metrics(eval_dir)
     if not metrics:
@@ -475,7 +475,7 @@ def webapp(
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
 ):
     """Launch the Soil Shazam Data Collector web app."""
-    from .webapp import create_app
+    from webapp import create_app
 
     web_app = create_app(config_dir=config_dir)
     typer.echo(f"Starting Soil Shazam Data Collector at http://{host}:{port}")

@@ -28,7 +28,10 @@ dependencies = [
 url = "https://download.pytorch.org/whl/cu124"
 
 [project.scripts]
-soil-shazam-data-collector = "soil_collector.cli:app"
+soil-shazam-data-collector = "cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools]
+py-modules = ["cli"]

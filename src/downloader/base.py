@@ -52,7 +52,7 @@ class ImageDownloader(abc.ABC):
 
     def _count_existing(self, directory: Path) -> int:
         """Count existing image files in a directory."""
-        from soil_collector.utils.image_utils import IMAGE_EXTENSIONS
+        from utils.image_utils import IMAGE_EXTENSIONS
         if not directory.exists():
             return 0
         return sum(1 for f in directory.iterdir() if f.suffix.lower() in IMAGE_EXTENSIONS)
