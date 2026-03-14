@@ -62,9 +62,10 @@
               {{ cat.replace('_', ' ') }}
               <span id="pred-{{ cat }}" class="annotate-prediction"></span>
             </label>
+            <div id="desc-{{ cat }}" class="annotate-help-text" style="margin-bottom:.2rem;"></div>
             <select id="gt-{{ cat }}" class="gt-select" data-cat="{{ cat }}">
-              <option value="__keep__">— keep predicted —</option>
-              <option value="">— choose label —</option>
+              <option value="__keep__">-- keep predicted --</option>
+              <option value="">-- choose label --</option>
               {% for opt in label_options_all[cat] %}
               <option value="{{ opt }}">{{ opt }}</option>
               {% endfor %}
@@ -106,6 +107,15 @@
   const CATEGORIES = {{ categories | tojson }};
   const LABEL_OPTIONS = {{ label_options_all | tojson }};
   const KEEP_SENTINEL = '__keep__';
+  const LABEL_DESCRIPTIONS = {
+    soil_color: 'Dominant visible soil color in the image.',
+    soil_texture: 'Overall feel/appearance of soil consistency (sandy, loamy, clayey, etc.).',
+    particle_size: 'Most common grain/clod size visible (fine, medium, coarse).',
+    crack_presence: 'Whether drying cracks are visible and how strong they appear.',
+    rock_fraction: 'Amount of visible stones/rock fragments mixed with soil.',
+    surface_structure: 'How soil aggregates are arranged (loose, blocky, aggregated, compacted).',
+    surface_roughness: 'Top-surface smoothness vs uneven rough appearance.'
+  };
   let samples = [];
   let currentIdx = 0;
   let currentSoil = null;
@@ -180,12 +190,14 @@
       const pred = predictedLabel(sample, cat);
       const predSpan = document.getElementById('pred-' + cat);
       if (predSpan) predSpan.textContent = pred ? '(predicted: ' + pred + ')' : '(predicted: N/A)';
+      const desc = document.getElementById('desc-' + cat);
+      if (desc) desc.textContent = LABEL_DESCRIPTIONS[cat] || '';
       const sel = document.getElementById('gt-' + cat);
       if (!sel) continue;
       const keepOpt = sel.querySelector('option[value="' + KEEP_SENTINEL + '"]');
       if (keepOpt) {
         keepOpt.disabled = !pred;
-        keepOpt.textContent = pred ? ('— keep predicted: ' + pred + ' —') : '— keep predicted (N/A) —';
+        keepOpt.textContent = pred ? ('-- keep predicted: ' + pred + ' --') : '-- keep predicted (N/A) --';
       }
       if (sample.ground_truth && sample.ground_truth[cat]) {
         sel.value = sample.ground_truth[cat];

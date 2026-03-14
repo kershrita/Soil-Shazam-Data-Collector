@@ -1,24 +1,25 @@
 # Soil Shazam Data Collector
 
-Soil Shazam Data Collector is an end-to-end pipeline to build a high-quality soil image dataset from web sources.
+Build a high-quality, evaluation-ready soil image dataset from web sources with an end-to-end pipeline for collection, filtering, labeling, review, and export.
 
-It supports:
-- large-scale image download
-- quality filtering (resolution, overlay/watermark, soil vs non-soil)
-- deduplication
-- automatic label assignment across 7 soil categories
-- human evaluation workflow and metrics reporting
-- JSON/CSV export
+## Why Soil Shazam
 
-## Pipeline
+- Scales image collection across multiple sources and queries
+- Cleans noisy web data using resize, deduplication, and overlay/soil filtering
+- Auto-labels 7 soil properties with CLIP-based prompts
+- Supports human-in-the-loop review in the web app
+- Produces evaluation metrics and exportable JSON/CSV artifacts
 
-1. `download`: crawl images from configured sources and queries
-2. `resize`: remove too-small images and resize oversized images
-3. `dedup`: remove perceptual duplicates
-4. `filter`: reject overlays/watermarks and non-soil images
-5. `label`: assign class labels using CLIP prompts
-6. `annotate` (web): human evaluation/ground-truth annotation
-7. `export`: export final dataset files
+## What It Does
+
+1. `download` images from configured sources
+2. `resize` and remove low-quality size outliers
+3. `dedup` perceptual duplicates
+4. `filter` overlays/watermarks and non-soil images
+5. `label` images across 7 soil categories
+6. `annotate` in web UI for evaluation ground truth
+7. `eval-report` to compute metrics
+8. `export` final dataset files
 
 ## Label Categories
 
@@ -30,29 +31,35 @@ It supports:
 - `surface_structure`
 - `surface_roughness`
 
-## Installation
+## Quick Start
+
+### 1) Install
 
 ```bash
 pip install -e .
 ```
 
-## CLI
-
-Primary command:
+### 2) Check CLI
 
 ```bash
 soil-shazam-data-collector --help
 ```
 
-### Typical usage
-
-Run full pipeline:
+### 3) Run Full Pipeline
 
 ```bash
 soil-shazam-data-collector run-all --limit 500
 ```
 
-Run step-by-step:
+### 4) Launch Web App
+
+```bash
+soil-shazam-data-collector webapp
+```
+
+Open `/` for dashboard and `/annotate` for evaluation review.
+
+## Step-by-Step Commands
 
 ```bash
 soil-shazam-data-collector download --source all --limit 500
@@ -63,49 +70,47 @@ soil-shazam-data-collector label
 soil-shazam-data-collector export
 ```
 
-Start web app:
+## Evaluation Flow
 
-```bash
-soil-shazam-data-collector webapp
-```
-
-## Evaluation Workflow
-
-Create evaluation sample:
+### Create Sample
 
 ```bash
 soil-shazam-data-collector eval-sample
 ```
 
-Then open `/annotate` in the web app to label samples:
-- mark `is_soil` (yes/no)
-- if soil, provide all class labels (keep predicted or correct per class)
+### Review in Web App (`/annotate`)
 
-Generate metrics and report:
+- Mark `is_soil` as yes/no
+- If soil, confirm or correct all 7 class labels
+- Save, skip, go back, and undo from the evaluation interface
+
+### Generate Metrics
 
 ```bash
 soil-shazam-data-collector eval-report
 ```
 
-Outputs are written under the `evaluation/` directory:
+Generated outputs (under `evaluation/`):
+
 - `sample.json`
 - `metrics.json`
 - `report.md`
 
 ## Configuration
 
-Configuration files are in `config/`:
+Project settings live in `config/`:
+
 - `pipeline.yaml`: paths, thresholds, processing settings
-- `prompts.yaml`: CLIP prompts for filter/label behavior
-- `queries.yaml`: search queries
+- `prompts.yaml`: CLIP prompts for filtering and class labeling
+- `queries.yaml`: web search query sets
 
-## Output
+## Outputs
 
-Final dataset artifacts are exported to the configured dataset/output paths as JSON and CSV.
+The pipeline writes processed datasets and exports to configured output paths in JSON and CSV formats.
 
-## Run Comparison Results (March 8, 2026)
+## Run Comparison (March 8, 2026)
 
-Two full runs were compared to measure impact of query/source and threshold optimization.
+Two full runs were compared to measure query/source and threshold optimization impact.
 
 ### Setup
 
@@ -134,13 +139,11 @@ Two full runs were compared to measure impact of query/source and threshold opti
 ### Key Findings
 
 - Multi-source collection scaled dataset size by ~9.4x while preserving yield quality.
-- All major class coverage gaps from Run 1 were resolved in Run 2.
-- Color balance improved significantly (less brown dominance, better dark/gray coverage).
-- Dedup and overlay filtering behaved as expected at scale:
-  - dedup removed ~34% of resized images
-  - overlay filter flagged ~17% in the larger, noisier crawl
+- Major class-coverage gaps from Run 1 were resolved in Run 2.
+- Color balance improved (less brown dominance, better dark/gray coverage).
+- Dedup removed ~34% of resized images; overlay filter flagged ~17% in larger crawl.
 
-### Remaining Gaps to Improve
+### Remaining Gaps
 
 - `particle_size=medium` remains relatively low (~8.7%)
 - `soil_color=white` remains low (~2.6%)

@@ -1,9 +1,5 @@
 # Data directories
 data/
-*.jpg
-*.jpeg
-*.png
-*.webp
 
 # Python
 __pycache__/
