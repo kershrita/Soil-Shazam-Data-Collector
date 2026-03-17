@@ -1,4 +1,25 @@
 ﻿
+/* ─── Shared utilities ──────────────────────────────────────────────────── */
+function escapeHtml(s) {
+  if (s === undefined || s === null) return "";
+  var div = document.createElement("div");
+  div.textContent = String(s);
+  return div.innerHTML;
+}
+
+function formatCat(cat) {
+  return String(cat || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+}
+
+function handleBrokenImage(img) {
+  img.onerror = null;
+  img.src = "";
+  img.alt = "Image not found";
+  img.classList.add("img-broken");
+}
+
 /* Image browser logic for the step detail page. */
 
 /* Distribution chart */
@@ -108,19 +129,6 @@
 
   function byId(id) {
     return document.getElementById(id);
-  }
-
-  function escapeHtml(s) {
-    if (s === undefined || s === null) return "";
-    var div = document.createElement("div");
-    div.textContent = String(s);
-    return div.innerHTML;
-  }
-
-  function formatCat(cat) {
-    return String(cat || "")
-      .replace(/_/g, " ")
-      .replace(/\b\w/g, function (c) { return c.toUpperCase(); });
   }
 
   function parsePositiveInt(value, fallback) {
@@ -350,6 +358,8 @@
       var imgEl = card.querySelector("img");
       imgEl.src = img.thumb_url || img.url;
       imgEl.alt = displayName;
+      imgEl.onload = function () { this.classList.add("loaded"); };
+      imgEl.onerror = function () { handleBrokenImage(this); };
 
       var nameEl = card.querySelector(".image-card-name");
       nameEl.textContent = displayName;
@@ -406,14 +416,6 @@
 
     html += '<span class="page-info">' + data.total + " images</span>";
     el.innerHTML = html;
-
-    el.querySelectorAll("button").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        state.currentPage = parseInt(this.dataset.page, 10);
-        loadImages({ historyMode: "push" });
-        window.scrollTo(0, 0);
-      });
-    });
   }
 
   function getActiveFilterItems() {
@@ -461,16 +463,6 @@
         "</span>";
     });
     wrap.innerHTML = html;
-
-    wrap.querySelectorAll(".filter-chip").forEach(function (chip) {
-      chip.querySelector("button").addEventListener("click", function () {
-        var idx = parseInt(chip.dataset.chipIdx, 10);
-        if (!Number.isFinite(idx) || !items[idx]) return;
-        items[idx].clear();
-        state.currentPage = 1;
-        loadImages({ historyMode: "push" });
-      });
-    });
   }
 
   function renderResultsSummary(data) {
@@ -555,14 +547,25 @@
     return detailUrl;
   }
 
+  var DETAIL_CACHE_MAX = 100;
+
   function fetchDetail(filename) {
     if (state.detailCache.has(filename)) {
-      return Promise.resolve(state.detailCache.get(filename));
+      /* Move to end so recently-used entries survive eviction */
+      var cached = state.detailCache.get(filename);
+      state.detailCache.delete(filename);
+      state.detailCache.set(filename, cached);
+      return Promise.resolve(cached);
     }
     return fetch(buildDetailUrl(filename))
       .then(function (r) { return r.json(); })
       .then(function (detail) {
         state.detailCache.set(filename, detail);
+        /* Evict oldest entry if cache exceeds limit */
+        if (state.detailCache.size > DETAIL_CACHE_MAX) {
+          var oldest = state.detailCache.keys().next().value;
+          state.detailCache.delete(oldest);
+        }
         return detail;
       });
   }
@@ -607,9 +610,13 @@
 
     var detailImg = byId("detail-img");
     if (detailImg) {
+      detailImg.classList.remove("img-broken");
+      detailImg.classList.remove("loaded");
       detailImg.src = img.url;
       detailImg.alt = img.filename;
       detailImg.style.display = "";
+      detailImg.onload = function () { this.classList.add("loaded"); };
+      detailImg.onerror = function () { handleBrokenImage(this); };
     }
     var title = byId("detail-filename");
     if (title) title.textContent = img.filename;
@@ -908,7 +915,7 @@
 
       if (allDups.length > 0) {
         var dupsHtml = '<div class="dup-group">';
-        dupsHtml += '<button class="dup-toggle-btn" type="button" onclick="this.parentNode.classList.toggle(\'expanded\')">';
+        dupsHtml += '<button class="dup-toggle-btn" type="button">';
         dupsHtml += '<span class="dup-toggle-icon">&#9654;</span> ' + groupLabel + "</button>";
         dupsHtml += '<div class="dup-thumbs">';
         allDups.forEach(function (dup) {
@@ -922,6 +929,13 @@
         });
         dupsHtml += "</div></div>";
         dupsEl.innerHTML = dupsHtml;
+
+        var dupToggle = dupsEl.querySelector(".dup-toggle-btn");
+        if (dupToggle) {
+          dupToggle.addEventListener("click", function () {
+            this.parentNode.classList.toggle("expanded");
+          });
+        }
       }
     }
 
@@ -1047,6 +1061,35 @@
       });
     }
 
+    /* Event delegation for pagination buttons */
+    var paginationEl = byId("pagination");
+    if (paginationEl) {
+      paginationEl.addEventListener("click", function (evt) {
+        var btn = evt.target.closest("button[data-page]");
+        if (!btn) return;
+        state.currentPage = parseInt(btn.dataset.page, 10);
+        loadImages({ historyMode: "push" });
+        window.scrollTo(0, 0);
+      });
+    }
+
+    /* Event delegation for filter chip removal */
+    var filtersWrap = byId("active-filters");
+    if (filtersWrap) {
+      filtersWrap.addEventListener("click", function (evt) {
+        var btn = evt.target.closest("button");
+        if (!btn) return;
+        var chip = btn.closest(".filter-chip");
+        if (!chip) return;
+        var idx = parseInt(chip.dataset.chipIdx, 10);
+        var items = getActiveFilterItems();
+        if (!Number.isFinite(idx) || !items[idx]) return;
+        items[idx].clear();
+        state.currentPage = 1;
+        loadImages({ historyMode: "push" });
+      });
+    }
+
     var closeBtn = byId("detail-close");
     if (closeBtn) closeBtn.addEventListener("click", closeDetail);
 
@@ -1100,29 +1143,19 @@
   ];
 
   var evalState = {
-    samples: [],
     filtered: [],
+    total: 0,
+    totalPages: 1,
     page: 1,
-    perPage: 30,
+    perPage: 24,
   };
 
-  function formatCat(cat) {
-    return String(cat || "")
-      .replace(/_/g, " ")
-      .replace(/\b\w/g, function (c) { return c.toUpperCase(); });
-  }
-
-  function escapeHtml(s) {
-    if (s === undefined || s === null) return "";
-    var div = document.createElement("div");
-    div.textContent = String(s);
-    return div.innerHTML;
-  }
-
-  /* ── Category accuracy bar chart ─────────────────────────────────────── */
   function renderCategoryBarChart(metrics) {
     var canvas = document.getElementById("category-bar-chart");
     if (!canvas || !metrics.summary || !metrics.summary.category_ranking) return;
+    var placeholder = canvas.parentNode.querySelector(".loading-placeholder");
+    if (placeholder) placeholder.remove();
+    canvas.hidden = false;
 
     var ranking = metrics.summary.category_ranking;
     var labels = ranking.map(function (r) { return formatCat(r[0]); });
@@ -1177,8 +1210,12 @@
   function renderCalibrationChart(metrics) {
     var canvas = document.getElementById("calibration-chart");
     if (!canvas || !metrics.calibration) return;
-
     var categories = Object.keys(metrics.calibration);
+    if (!categories.length) return;
+    var placeholder = canvas.parentNode.querySelector(".loading-placeholder");
+    if (placeholder) placeholder.remove();
+    canvas.hidden = false;
+
     var datasets = [];
 
     categories.forEach(function (cat, i) {
@@ -1315,77 +1352,69 @@
 
   /* ── Sample browser ──────────────────────────────────────────────────── */
   function loadSamples() {
-    fetch("/api/eval/sample")
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (data.error) {
-          evalState.samples = [];
-        } else {
-          evalState.samples = Array.isArray(data) ? data : (data.samples || []);
-        }
-        applyFilters();
-      })
-      .catch(function () {
-        evalState.samples = [];
-        renderSampleGrid();
-      });
-  }
-
-  function applyFilters() {
     var correctFilter = document.getElementById("eval-filter-correct");
     var categoryFilter = document.getElementById("eval-filter-category");
     var soilFilter = document.getElementById("eval-filter-soil");
 
+    var params = [];
     var correctVal = correctFilter ? correctFilter.value : "";
     var categoryVal = categoryFilter ? categoryFilter.value : "";
     var soilVal = soilFilter ? soilFilter.value : "";
 
-    evalState.filtered = evalState.samples.filter(function (s) {
-      /* soil filter */
-      if (soilVal === "soil" && s.is_soil === false) return false;
-      if (soilVal === "not_soil" && s.is_soil !== false) return false;
+    if (correctVal) params.push("correct=" + encodeURIComponent(correctVal));
+    if (categoryVal) params.push("category=" + encodeURIComponent(categoryVal));
+    if (soilVal) params.push("soil=" + encodeURIComponent(soilVal));
+    params.push("page=" + evalState.page);
+    params.push("per_page=" + evalState.perPage);
 
-      /* category filter: only applies to soil images with predictions */
-      if (categoryVal && s.ground_truth) {
-        if (!(categoryVal in (s.ground_truth || {}))) return false;
-      }
+    var url = "/api/eval/sample?" + params.join("&");
 
-      /* correct / incorrect filter */
-      if (correctVal && s.ground_truth && s.predicted) {
-        if (categoryVal) {
-          var isCorrect = s.predicted[categoryVal] === s.ground_truth[categoryVal];
-          if (correctVal === "correct" && !isCorrect) return false;
-          if (correctVal === "incorrect" && isCorrect) return false;
+    fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) {
+          evalState.filtered = [];
+          evalState.total = 0;
+          evalState.totalPages = 1;
         } else {
-          /* any category mismatch */
-          var hasAny = false;
-          var allCorrect = true;
-          Object.keys(s.ground_truth).forEach(function (k) {
-            if (s.predicted && s.predicted[k] !== undefined) {
-              hasAny = true;
-              if (s.predicted[k] !== s.ground_truth[k]) allCorrect = false;
-            }
-          });
-          if (correctVal === "correct" && (!hasAny || !allCorrect)) return false;
-          if (correctVal === "incorrect" && allCorrect) return false;
+          evalState.filtered = data.samples || [];
+          evalState.total = data.total || 0;
+          evalState.totalPages = data.total_pages || 1;
+          evalState.page = data.page || 1;
         }
-      }
+        renderSampleGrid();
+        renderSamplePagination();
+        renderSampleSummary();
+      })
+      .catch(function () {
+        evalState.filtered = [];
+        evalState.total = 0;
+        evalState.totalPages = 1;
+        renderSampleGrid();
+        renderSamplePagination();
+        renderSampleSummary();
+      });
+  }
 
-      return true;
-    });
-
+  function applyFilters() {
     evalState.page = 1;
-    renderSampleGrid();
-    renderSamplePagination();
-    renderSampleSummary();
+    loadSamples();
+  }
+
+  function renderSampleSummary() {
+    var el = document.getElementById("eval-results-summary");
+    if (!el) return;
+    if (!evalState.total) { el.textContent = ""; return; }
+    var start = (evalState.page - 1) * evalState.perPage + 1;
+    var end = Math.min(evalState.page * evalState.perPage, evalState.total);
+    el.textContent = "Showing " + start + "\u2013" + end + " of " + evalState.total + " samples";
   }
 
   function renderSampleGrid() {
     var grid = document.getElementById("eval-sample-grid");
     if (!grid) return;
 
-    var start = (evalState.page - 1) * evalState.perPage;
-    var pageItems = evalState.filtered.slice(start, start + evalState.perPage);
+    var pageItems = evalState.filtered;
 
     if (!pageItems.length) {
       grid.innerHTML = '<div class="empty-state">No matching samples.</div>';
@@ -1409,11 +1438,11 @@
         cardClass += allMatch ? " eval-match" : " eval-mismatch";
       }
 
-      var imgUrl = "/images/eval/" + encodeURIComponent(s.image);
+      var imgUrl = "/images/eval/" + s.image.split("/").map(encodeURIComponent).join("/");
       var displayName = (s.image || "").split("/").pop();
 
       html += '<div class="' + cardClass + '">';
-      html += '<img src="' + escapeHtml(imgUrl) + '" alt="' + escapeHtml(displayName) + '" loading="lazy">';
+      html += '<img src="' + escapeHtml(imgUrl) + '" alt="' + escapeHtml(displayName) + '" loading="lazy" onload="this.classList.add(\'loaded\')" onerror="handleBrokenImage(this)">';
       html += '<div class="eval-sample-info">';
       html += '<div class="eval-sample-filename" title="' + escapeHtml(s.image) + '">' + escapeHtml(displayName) + "</div>";
       html += '<div class="eval-sample-labels">';
@@ -1447,7 +1476,7 @@
     var el = document.getElementById("eval-pagination");
     if (!el) return;
 
-    var totalPages = Math.max(1, Math.ceil(evalState.filtered.length / evalState.perPage));
+    var totalPages = evalState.totalPages;
     if (totalPages <= 1) { el.innerHTML = ""; return; }
 
     var html = "";
@@ -1465,25 +1494,6 @@
       html += '<button class="btn btn-small" data-page="' + (evalState.page + 1) + '">&rarr;</button>';
     }
     el.innerHTML = html;
-
-    el.querySelectorAll("button").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        evalState.page = parseInt(this.dataset.page, 10);
-        renderSampleGrid();
-        renderSamplePagination();
-        renderSampleSummary();
-      });
-    });
-  }
-
-  function renderSampleSummary() {
-    var el = document.getElementById("eval-results-summary");
-    if (!el) return;
-    var total = evalState.filtered.length;
-    var totalPages = Math.max(1, Math.ceil(total / evalState.perPage));
-    var start = (evalState.page - 1) * evalState.perPage;
-    var showing = Math.min(evalState.perPage, total - start);
-    el.textContent = "Showing " + showing + " of " + total + " samples | Page " + evalState.page + " / " + totalPages;
   }
 
   function wireSampleFilters() {
@@ -1503,6 +1513,18 @@
     renderConfusionMatrices();
     wireCategories();
     wireSampleFilters();
+
+    /* Event delegation for eval pagination */
+    var evalPag = document.getElementById("eval-pagination");
+    if (evalPag) {
+      evalPag.addEventListener("click", function (evt) {
+        var btn = evt.target.closest("button[data-page]");
+        if (!btn) return;
+        evalState.page = parseInt(btn.dataset.page, 10);
+        loadSamples();
+      });
+    }
+
     loadSamples();
   };
 }());

@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Evaluation Results — Soil Pipeline{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% endblock %}
 
 {% block content %}
 {% if not metrics %}
@@ -9,7 +12,7 @@
     Run <code>soil-shazam-data-collector eval-report</code> after completing annotation
     to generate accuracy metrics.
   </p>
-  <a href="/annotate" class="btn btn-primary" style="margin-top:1rem">Open Annotation Workspace</a>
+  <a href="/annotate" class="btn btn-primary eval-empty-cta">Open Annotation Workspace</a>
 </div>
 {% else %}
 
@@ -95,7 +98,8 @@
     <p class="subtitle">Label accuracy per category, ranked best to worst</p>
   </div>
   <div class="eval-chart-wrap">
-    <canvas id="category-bar-chart"></canvas>
+    <p class="loading-placeholder">Loading chart...</p>
+    <canvas id="category-bar-chart" hidden></canvas>
   </div>
 </section>
 
@@ -143,8 +147,8 @@
         </table>
         <!-- Confusion matrix -->
         <h4>Confusion Matrix</h4>
-        <div class="eval-cm-wrap" data-cm="{{ cat.confusion_matrix | tojson | e }}">
-          <!-- rendered by JS -->
+        <div class="eval-cm-wrap" data-cm='{{ cat.confusion_matrix | tojson }}'>
+          <p class="loading-placeholder">Loading confusion matrix...</p>
         </div>
       </div>
     </div>
@@ -159,7 +163,8 @@
     <p class="subtitle">Accuracy within confidence bins — ideally rises with confidence</p>
   </div>
   <div class="eval-chart-wrap eval-chart-wide">
-    <canvas id="calibration-chart"></canvas>
+    <p class="loading-placeholder">Loading chart...</p>
+    <canvas id="calibration-chart" hidden></canvas>
   </div>
 </section>
 
@@ -170,25 +175,27 @@
     <p class="subtitle">Browse annotated images with predicted vs ground truth labels</p>
   </div>
   <div class="filter-bar">
-    <select id="eval-filter-correct" class="filter-select">
+    <select id="eval-filter-correct" class="filter-select" aria-label="Filter by correctness">
       <option value="">All results</option>
       <option value="correct">Correct only</option>
       <option value="incorrect">Incorrect only</option>
     </select>
-    <select id="eval-filter-category" class="filter-select">
+    <select id="eval-filter-category" class="filter-select" aria-label="Filter by category">
       <option value="">All categories</option>
       {% for cat_name, _ in metrics.summary.category_ranking %}
       <option value="{{ cat_name }}">{{ cat_name | replace('_', ' ') | title }}</option>
       {% endfor %}
     </select>
-    <select id="eval-filter-soil" class="filter-select">
+    <select id="eval-filter-soil" class="filter-select" aria-label="Filter by soil status">
       <option value="">All soil status</option>
       <option value="soil">Soil images</option>
       <option value="not_soil">Not soil</option>
     </select>
   </div>
   <div id="eval-results-summary" class="results-summary"></div>
-  <div id="eval-sample-grid" class="eval-sample-grid"></div>
+  <div id="eval-sample-grid" class="eval-sample-grid">
+    <p class="loading-placeholder">Loading samples...</p>
+  </div>
   <div id="eval-pagination" class="pagination"></div>
 </section>
 

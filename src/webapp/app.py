@@ -193,7 +193,7 @@ def create_app(config_dir: Path | None = None) -> Flask:
 
     @app.route("/thumbnails/<step_id>/<path:filename>")
     def serve_thumbnail(step_id, filename):
-        """Serve a downscaled thumbnail (200px max) for grid display."""
+        """Serve a downscaled thumbnail (200px max) with disk caching."""
         view = request.args.get("view", "kept", type=str)
         if step_id == "filter" and view == "rejected":
             deduped_dir = resolve(cfg["paths"]["deduped"])
@@ -208,17 +208,27 @@ def create_app(config_dir: Path | None = None) -> Flask:
         if not src_path.is_file():
             return "Not found", 404
 
-        # Generate thumbnail in memory
+        # Disk cache: store thumbnails in .thumbnails/ beside the images dir
+        cache_dir = img_dir / ".thumbnails"
+        fmt = "JPEG" if src_path.suffix.lower() in (".jpg", ".jpeg") else "PNG"
+        ext = ".jpg" if fmt == "JPEG" else ".png"
+        cache_path = cache_dir / (Path(filename).stem + ext)
+
+        if cache_path.is_file() and cache_path.stat().st_mtime >= src_path.stat().st_mtime:
+            mimetype = "image/jpeg" if fmt == "JPEG" else "image/png"
+            return send_from_directory(cache_dir, cache_path.name,
+                                       mimetype=mimetype,
+                                       max_age=86400)
+
         try:
             with Image.open(src_path) as img:
                 img.thumbnail((200, 200))
-                buf = io.BytesIO()
-                fmt = "JPEG" if src_path.suffix.lower() in (".jpg", ".jpeg") else "PNG"
-                img.save(buf, format=fmt, quality=80)
-                buf.seek(0)
-                mimetype = "image/jpeg" if fmt == "JPEG" else "image/png"
-                return Response(buf.getvalue(), mimetype=mimetype,
-                                headers={"Cache-Control": "public, max-age=86400"})
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                img.save(cache_path, format=fmt, quality=80)
+            mimetype = "image/jpeg" if fmt == "JPEG" else "image/png"
+            return send_from_directory(cache_dir, cache_path.name,
+                                       mimetype=mimetype,
+                                       max_age=86400)
         except Exception:
             return send_from_directory(img_dir, filename)
 
@@ -573,7 +583,7 @@ def create_app(config_dir: Path | None = None) -> Flask:
 
     @app.route("/api/eval/sample")
     def api_eval_sample():
-        """Return the evaluation sample for annotation."""
+        """Return the evaluation sample with server-side filtering & pagination."""
         eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
         sample_path = eval_dir / "sample.json"
         if not sample_path.exists():
@@ -581,7 +591,77 @@ def create_app(config_dir: Path | None = None) -> Flask:
                 "error": "No evaluation sample found. Run: soil-shazam-data-collector eval-sample"
             }), 404
         samples = json.loads(sample_path.read_text(encoding="utf-8"))
-        return jsonify({"samples": samples, "total": len(samples)})
+
+        # ── Filtering ──────────────────────────────────────────────────────
+        soil_val = request.args.get("soil", "")
+        category_val = request.args.get("category", "")
+        correct_val = request.args.get("correct", "")
+
+        filtered = []
+        for s in samples:
+            # soil filter
+            if soil_val == "soil" and s.get("is_soil") is False:
+                continue
+            if soil_val == "not_soil" and s.get("is_soil") is not False:
+                continue
+
+            gt = s.get("ground_truth") or {}
+            pr = s.get("predicted") or {}
+
+            # category filter
+            if category_val and gt:
+                if category_val not in gt:
+                    continue
+
+            # correct / incorrect filter
+            if correct_val and gt and pr:
+                if category_val:
+                    is_correct = pr.get(category_val) == gt.get(category_val)
+                    if correct_val == "correct" and not is_correct:
+                        continue
+                    if correct_val == "incorrect" and is_correct:
+                        continue
+                else:
+                    has_any = False
+                    all_correct = True
+                    for k in gt:
+                        if k in pr:
+                            has_any = True
+                            if pr[k] != gt[k]:
+                                all_correct = False
+                    if correct_val == "correct" and (not has_any or not all_correct):
+                        continue
+                    if correct_val == "incorrect" and all_correct:
+                        continue
+
+            filtered.append(s)
+
+        # ── Pagination ─────────────────────────────────────────────────────
+        # ?all=1 bypasses pagination (used by the annotation UI which needs the full set)
+        if request.args.get("all") == "1":
+            return jsonify({
+                "samples": filtered,
+                "total": len(filtered),
+                "page": 1,
+                "per_page": len(filtered),
+                "total_pages": 1,
+            })
+
+        page = max(1, request.args.get("page", 1, type=int))
+        per_page = min(100, max(1, request.args.get("per_page", 24, type=int)))
+        total = len(filtered)
+        total_pages = max(1, -(-total // per_page))  # ceil division
+        page = min(page, total_pages)
+        start = (page - 1) * per_page
+        page_items = filtered[start:start + per_page]
+
+        return jsonify({
+            "samples": page_items,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+        })
 
     @app.route("/api/eval/annotate", methods=["POST"])
     def api_eval_annotate():

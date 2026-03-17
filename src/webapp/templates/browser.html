@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}{{ step.name }} — Soil Shazam Data Collector{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% endblock %}
 
 {% block content %}
 <!-- Step header -->
@@ -52,24 +55,24 @@
 
 <!-- Filter bar -->
 <div class="filter-bar">
-  <input type="text" id="search-input" placeholder="Search filename..." class="search-input">
-  <select id="per-page-select" class="filter-select filter-select-small">
+  <input type="text" id="search-input" placeholder="Search filename..." class="search-input" aria-label="Search images by filename">
+  <select id="per-page-select" class="filter-select filter-select-small" aria-label="Images per page">
     <option value="30">30 / page</option>
     <option value="60" selected>60 / page</option>
     <option value="120">120 / page</option>
   </select>
-  <select id="density-select" class="filter-select filter-select-small">
+  <select id="density-select" class="filter-select filter-select-small" aria-label="Grid density">
     <option value="comfy" selected>Comfy grid</option>
     <option value="compact">Compact grid</option>
   </select>
   {% if step.id == "download" %}
-  <select id="filter-source" class="filter-select" data-category="source">
+  <select id="filter-source" class="filter-select" data-category="source" aria-label="Filter by source">
     <option value="">All sources</option>
     {% for src in stats.sources|default({}) %}
     <option value="{{ src }}">{{ src }}</option>
     {% endfor %}
   </select>
-  <select id="filter-query" class="filter-select" data-category="query">
+  <select id="filter-query" class="filter-select" data-category="query" aria-label="Filter by query">
     <option value="">All queries</option>
     {% for q in stats.queries|default({}) %}
     <option value="{{ q }}">{{ q.replace('_', ' ') }}</option>
@@ -77,7 +80,7 @@
   </select>
   {% endif %}
   {% if step.id in ("filter", "dedup") and stats.source_list %}
-  <select id="filter-source" class="filter-select" data-category="source">
+  <select id="filter-source" class="filter-select" data-category="source" aria-label="Filter by source">
     <option value="">All sources</option>
     {% for src in stats.source_list %}
     <option value="{{ src }}">{{ src }}</option>
@@ -85,7 +88,7 @@
   </select>
   {% endif %}
   {% if step.id == "filter" %}
-  <select id="filter-decision-band" class="filter-select" data-category="decision_band">
+  <select id="filter-decision-band" class="filter-select" data-category="decision_band" aria-label="Filter by confidence band">
     <option value="">All confidence bands</option>
     <option value="borderline">Borderline (&lt; 0.03 margin)</option>
     <option value="moderate">Moderate (0.03-0.08)</option>
@@ -93,12 +96,12 @@
   </select>
   {% endif %}
   {% if step.id == "filter" and view == "rejected" %}
-  <select id="filter-reason" class="filter-select" data-category="reason">
+  <select id="filter-reason" class="filter-select" data-category="reason" aria-label="Filter by rejection reason">
     <option value="">All reasons</option>
     <option value="low_soil_score">Low soil score ({{ stats.rejection_reasons.low_soil_score|default(0) }})</option>
     <option value="overlay">Overlay ({{ stats.rejection_reasons.overlay|default(0) }})</option>
   </select>
-  <select id="filter-failure-mode" class="filter-select" data-category="failure_mode">
+  <select id="filter-failure-mode" class="filter-select" data-category="failure_mode" aria-label="Filter by failed boundary">
     <option value="">All failed boundaries</option>
     <option value="overlay_margin">Failed overlay margin</option>
     <option value="soil_threshold">Failed soil threshold</option>
@@ -106,7 +109,7 @@
   </select>
   {% endif %}
   {% if step.id == "filter" and view == "kept" %}
-  <select id="filter-nearest-boundary" class="filter-select" data-category="nearest_boundary">
+  <select id="filter-nearest-boundary" class="filter-select" data-category="nearest_boundary" aria-label="Filter by nearest boundary">
     <option value="">Any nearest boundary</option>
     <option value="soil_threshold">Nearest to soil threshold</option>
     <option value="soil_vs_negative">Nearest to positive-vs-negative</option>
@@ -116,7 +119,7 @@
   {% if step.has_labels and label_options %}
     {% for cat in categories %}
       {% if label_options.get(cat) %}
-      <select id="filter-{{ cat }}" class="filter-select" data-category="{{ cat }}">
+      <select id="filter-{{ cat }}" class="filter-select" data-category="{{ cat }}" aria-label="Filter by {{ cat.replace('_', ' ') }}">
         <option value="">{{ cat.replace('_', ' ').title() }}</option>
         {% for opt in label_options[cat] %}
         <option value="{{ opt }}">{{ opt }}</option>
