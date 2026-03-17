@@ -1086,3 +1086,423 @@
     loadImages({ historyMode: "replace", openImageFromUrl: true });
   };
 }());
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Evaluation Dashboard
+   ═══════════════════════════════════════════════════════════════════════════ */
+(function () {
+  "use strict";
+
+  var EVAL_COLORS = [
+    "#059669", "#2563eb", "#7c3aed", "#db2777",
+    "#ea580c", "#0891b2", "#d97706", "#4f46e5",
+  ];
+
+  var evalState = {
+    samples: [],
+    filtered: [],
+    page: 1,
+    perPage: 30,
+  };
+
+  function formatCat(cat) {
+    return String(cat || "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
+  function escapeHtml(s) {
+    if (s === undefined || s === null) return "";
+    var div = document.createElement("div");
+    div.textContent = String(s);
+    return div.innerHTML;
+  }
+
+  /* ── Category accuracy bar chart ─────────────────────────────────────── */
+  function renderCategoryBarChart(metrics) {
+    var canvas = document.getElementById("category-bar-chart");
+    if (!canvas || !metrics.summary || !metrics.summary.category_ranking) return;
+
+    var ranking = metrics.summary.category_ranking;
+    var labels = ranking.map(function (r) { return formatCat(r[0]); });
+    var values = ranking.map(function (r) { return +(r[1] * 100).toFixed(1); });
+    var colors = values.map(function (v) {
+      return v >= 75 ? "#059669" : (v >= 50 ? "#d97706" : "#dc2626");
+    });
+
+    new Chart(canvas, {
+      type: "bar",
+      data: {
+        labels: labels,
+        datasets: [{
+          data: values,
+          backgroundColor: colors,
+          borderWidth: 0,
+          borderRadius: 4,
+        }],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            min: 0, max: 100,
+            ticks: {
+              callback: function (v) { return v + "%"; },
+              font: { size: 11 },
+              color: "#6b7280",
+            },
+            grid: { color: "#e0e3e8" },
+          },
+          y: {
+            ticks: { font: { size: 12, weight: "600" }, color: "#1a1d23" },
+            grid: { display: false },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function (ctx) { return ctx.parsed.x.toFixed(1) + "% accuracy"; },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  /* ── Calibration chart ───────────────────────────────────────────────── */
+  function renderCalibrationChart(metrics) {
+    var canvas = document.getElementById("calibration-chart");
+    if (!canvas || !metrics.calibration) return;
+
+    var categories = Object.keys(metrics.calibration);
+    var datasets = [];
+
+    categories.forEach(function (cat, i) {
+      var cal = metrics.calibration[cat];
+      var data = cal.accuracy.map(function (val, idx) {
+        if (val === null) return null;
+        return { x: idx, y: +(val * 100).toFixed(1) };
+      }).filter(function (d) { return d !== null; });
+
+      datasets.push({
+        label: formatCat(cat),
+        data: data,
+        borderColor: EVAL_COLORS[i % EVAL_COLORS.length],
+        backgroundColor: EVAL_COLORS[i % EVAL_COLORS.length] + "33",
+        tension: 0.3,
+        pointRadius: 4,
+        pointHoverRadius: 6,
+        fill: false,
+      });
+    });
+
+    var binLabels = metrics.calibration[categories[0]].bins;
+
+    new Chart(canvas, {
+      type: "line",
+      data: { labels: binLabels, datasets: datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            title: { display: true, text: "Confidence Bin", font: { size: 12 } },
+            ticks: { font: { size: 10 }, color: "#6b7280" },
+            grid: { display: false },
+          },
+          y: {
+            min: 0, max: 100,
+            title: { display: true, text: "Accuracy %", font: { size: 12 } },
+            ticks: {
+              callback: function (v) { return v + "%"; },
+              font: { size: 10 },
+              color: "#6b7280",
+            },
+            grid: { color: "#e0e3e8" },
+          },
+        },
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { font: { size: 11 }, usePointStyle: true, padding: 15 },
+          },
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                return ctx.dataset.label + ": " + ctx.parsed.y.toFixed(1) + "%";
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  /* ── Confusion matrix renderer ───────────────────────────────────────── */
+  function renderConfusionMatrices() {
+    document.querySelectorAll(".eval-cm-wrap[data-cm]").forEach(function (wrap) {
+      var cm;
+      try { cm = JSON.parse(wrap.dataset.cm); } catch (e) { return; }
+
+      var allLabels = {};
+      Object.keys(cm).forEach(function (actual) {
+        allLabels[actual] = true;
+        Object.keys(cm[actual]).forEach(function (pred) { allLabels[pred] = true; });
+      });
+      var labels = Object.keys(allLabels).sort();
+      if (!labels.length) return;
+
+      /* find max value for intensity scaling */
+      var maxVal = 0;
+      labels.forEach(function (actual) {
+        labels.forEach(function (pred) {
+          var v = (cm[actual] && cm[actual][pred]) || 0;
+          if (v > maxVal) maxVal = v;
+        });
+      });
+
+      var html = '<table><thead><tr><th title="Actual \\ Predicted">Act \\ Pred</th>';
+      labels.forEach(function (l) {
+        html += "<th>" + escapeHtml(l) + "</th>";
+      });
+      html += "</tr></thead><tbody>";
+
+      labels.forEach(function (actual) {
+        html += "<tr><th>" + escapeHtml(actual) + "</th>";
+        labels.forEach(function (pred) {
+          var v = (cm[actual] && cm[actual][pred]) || 0;
+          var isDiag = actual === pred;
+          var intensity = maxVal > 0 ? (v / maxVal) : 0;
+          var bgColor;
+          if (v === 0) {
+            bgColor = "transparent";
+          } else if (isDiag) {
+            bgColor = "rgba(5, 150, 105," + (0.1 + intensity * 0.5) + ")";
+          } else {
+            bgColor = "rgba(220, 38, 38," + (0.08 + intensity * 0.4) + ")";
+          }
+          var cls = isDiag && v > 0 ? ' class="eval-cm-diag"' : "";
+          html += "<td" + cls + ' style="background:' + bgColor + '">';
+          html += v > 0 ? v : "";
+          html += "</td>";
+        });
+        html += "</tr>";
+      });
+
+      html += "</tbody></table>";
+      wrap.innerHTML = html;
+    });
+  }
+
+  /* ── Category expand / collapse ──────────────────────────────────────── */
+  function wireCategories() {
+    document.querySelectorAll(".eval-category-toggle").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var card = btn.closest(".eval-category-card");
+        if (!card) return;
+        var body = card.querySelector(".eval-category-body");
+        if (!body) return;
+        var expanded = card.classList.toggle("expanded");
+        body.hidden = !expanded;
+        btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+      });
+    });
+  }
+
+  /* ── Sample browser ──────────────────────────────────────────────────── */
+  function loadSamples() {
+    fetch("/api/eval/sample")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) {
+          evalState.samples = [];
+        } else {
+          evalState.samples = Array.isArray(data) ? data : (data.samples || []);
+        }
+        applyFilters();
+      })
+      .catch(function () {
+        evalState.samples = [];
+        renderSampleGrid();
+      });
+  }
+
+  function applyFilters() {
+    var correctFilter = document.getElementById("eval-filter-correct");
+    var categoryFilter = document.getElementById("eval-filter-category");
+    var soilFilter = document.getElementById("eval-filter-soil");
+
+    var correctVal = correctFilter ? correctFilter.value : "";
+    var categoryVal = categoryFilter ? categoryFilter.value : "";
+    var soilVal = soilFilter ? soilFilter.value : "";
+
+    evalState.filtered = evalState.samples.filter(function (s) {
+      /* soil filter */
+      if (soilVal === "soil" && s.is_soil === false) return false;
+      if (soilVal === "not_soil" && s.is_soil !== false) return false;
+
+      /* category filter: only applies to soil images with predictions */
+      if (categoryVal && s.ground_truth) {
+        if (!(categoryVal in (s.ground_truth || {}))) return false;
+      }
+
+      /* correct / incorrect filter */
+      if (correctVal && s.ground_truth && s.predicted) {
+        if (categoryVal) {
+          var isCorrect = s.predicted[categoryVal] === s.ground_truth[categoryVal];
+          if (correctVal === "correct" && !isCorrect) return false;
+          if (correctVal === "incorrect" && isCorrect) return false;
+        } else {
+          /* any category mismatch */
+          var hasAny = false;
+          var allCorrect = true;
+          Object.keys(s.ground_truth).forEach(function (k) {
+            if (s.predicted && s.predicted[k] !== undefined) {
+              hasAny = true;
+              if (s.predicted[k] !== s.ground_truth[k]) allCorrect = false;
+            }
+          });
+          if (correctVal === "correct" && (!hasAny || !allCorrect)) return false;
+          if (correctVal === "incorrect" && allCorrect) return false;
+        }
+      }
+
+      return true;
+    });
+
+    evalState.page = 1;
+    renderSampleGrid();
+    renderSamplePagination();
+    renderSampleSummary();
+  }
+
+  function renderSampleGrid() {
+    var grid = document.getElementById("eval-sample-grid");
+    if (!grid) return;
+
+    var start = (evalState.page - 1) * evalState.perPage;
+    var pageItems = evalState.filtered.slice(start, start + evalState.perPage);
+
+    if (!pageItems.length) {
+      grid.innerHTML = '<div class="empty-state">No matching samples.</div>';
+      return;
+    }
+
+    var html = "";
+    pageItems.forEach(function (s) {
+      var isSoil = s.is_soil !== false;
+      var hasLabels = isSoil && s.ground_truth && s.predicted;
+
+      /* overall match status */
+      var cardClass = "eval-sample-card";
+      if (!isSoil) {
+        cardClass += " eval-not-soil";
+      } else if (hasLabels) {
+        var allMatch = true;
+        Object.keys(s.ground_truth).forEach(function (k) {
+          if (s.predicted[k] !== s.ground_truth[k]) allMatch = false;
+        });
+        cardClass += allMatch ? " eval-match" : " eval-mismatch";
+      }
+
+      var imgUrl = "/images/eval/" + encodeURIComponent(s.image);
+      var displayName = (s.image || "").split("/").pop();
+
+      html += '<div class="' + cardClass + '">';
+      html += '<img src="' + escapeHtml(imgUrl) + '" alt="' + escapeHtml(displayName) + '" loading="lazy">';
+      html += '<div class="eval-sample-info">';
+      html += '<div class="eval-sample-filename" title="' + escapeHtml(s.image) + '">' + escapeHtml(displayName) + "</div>";
+      html += '<div class="eval-sample-labels">';
+
+      if (!isSoil) {
+        html += '<span class="eval-sample-tag eval-tag-not-soil">Not Soil</span>';
+      } else if (hasLabels) {
+        var categoryFilter = document.getElementById("eval-filter-category");
+        var focusCat = categoryFilter ? categoryFilter.value : "";
+        var catsToShow = focusCat ? [focusCat] : Object.keys(s.ground_truth).slice(0, 3);
+        catsToShow.forEach(function (k) {
+          var gt = s.ground_truth[k];
+          var pr = s.predicted[k];
+          if (gt === undefined) return;
+          var match = pr === gt;
+          var tagClass = match ? "eval-tag-match" : "eval-tag-mismatch";
+          var label = match ? gt : (pr || "?") + " -> " + gt;
+          html += '<span class="eval-sample-tag ' + tagClass + '" title="' + escapeHtml(formatCat(k)) + '">' + escapeHtml(label) + "</span>";
+        });
+      } else {
+        html += '<span class="eval-sample-tag eval-tag-soil">Soil</span>';
+      }
+
+      html += "</div></div></div>";
+    });
+
+    grid.innerHTML = html;
+  }
+
+  function renderSamplePagination() {
+    var el = document.getElementById("eval-pagination");
+    if (!el) return;
+
+    var totalPages = Math.max(1, Math.ceil(evalState.filtered.length / evalState.perPage));
+    if (totalPages <= 1) { el.innerHTML = ""; return; }
+
+    var html = "";
+    if (evalState.page > 1) {
+      html += '<button class="btn btn-small" data-page="' + (evalState.page - 1) + '">&larr;</button>';
+    }
+    var startP = Math.max(1, evalState.page - 4);
+    var endP = Math.min(totalPages, startP + 8);
+    startP = Math.max(1, endP - 8);
+    for (var p = startP; p <= endP; p++) {
+      var active = p === evalState.page ? " active" : "";
+      html += '<button class="btn btn-small' + active + '" data-page="' + p + '">' + p + "</button>";
+    }
+    if (evalState.page < totalPages) {
+      html += '<button class="btn btn-small" data-page="' + (evalState.page + 1) + '">&rarr;</button>';
+    }
+    el.innerHTML = html;
+
+    el.querySelectorAll("button").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        evalState.page = parseInt(this.dataset.page, 10);
+        renderSampleGrid();
+        renderSamplePagination();
+        renderSampleSummary();
+      });
+    });
+  }
+
+  function renderSampleSummary() {
+    var el = document.getElementById("eval-results-summary");
+    if (!el) return;
+    var total = evalState.filtered.length;
+    var totalPages = Math.max(1, Math.ceil(total / evalState.perPage));
+    var start = (evalState.page - 1) * evalState.perPage;
+    var showing = Math.min(evalState.perPage, total - start);
+    el.textContent = "Showing " + showing + " of " + total + " samples | Page " + evalState.page + " / " + totalPages;
+  }
+
+  function wireSampleFilters() {
+    ["eval-filter-correct", "eval-filter-category", "eval-filter-soil"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener("change", applyFilters);
+    });
+  }
+
+  /* ── Init ─────────────────────────────────────────────────────────────── */
+  window.initEvalDashboard = function () {
+    var metrics = window.EVAL_METRICS;
+    if (!metrics) return;
+
+    renderCategoryBarChart(metrics);
+    renderCalibrationChart(metrics);
+    renderConfusionMatrices();
+    wireCategories();
+    wireSampleFilters();
+    loadSamples();
+  };
+}());

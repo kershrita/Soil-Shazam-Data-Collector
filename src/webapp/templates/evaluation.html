@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block title %}Evaluation Results — Soil Pipeline{% endblock %}
+
+{% block content %}
+{% if not metrics %}
+<div class="annotate-state">
+  <h2>No evaluation results yet</h2>
+  <p>
+    Run <code>soil-shazam-data-collector eval-report</code> after completing annotation
+    to generate accuracy metrics.
+  </p>
+  <a href="/annotate" class="btn btn-primary" style="margin-top:1rem">Open Annotation Workspace</a>
+</div>
+{% else %}
+
+<!-- ── A: Summary Header ─────────────────────────────────────────────────── -->
+<div class="step-header">
+  <div>
+    <h1>Evaluation Results</h1>
+    <p class="subtitle">
+      Based on {{ metrics.sample_size.total_annotated }} annotated samples
+      ({{ metrics.sample_size.accepted_annotated }} accepted,
+       {{ metrics.sample_size.rejected_annotated }} rejected)
+    </p>
+  </div>
+  <a href="/annotate" class="btn btn-secondary">&larr; Annotation</a>
+</div>
+
+<div class="eval-summary-cards">
+  <div class="eval-metric-card">
+    <div class="eval-metric-label">Filter Precision</div>
+    <div class="eval-metric-value {{ 'good' if metrics.summary.filter_precision >= 0.8 else 'bad' }}">
+      {{ "%.1f%%"|format(metrics.summary.filter_precision * 100) }}
+    </div>
+    <div class="eval-metric-detail">{{ metrics.filter.true_positives }} TP / {{ metrics.filter.false_positives }} FP</div>
+  </div>
+  <div class="eval-metric-card">
+    <div class="eval-metric-label">Filter Recall</div>
+    <div class="eval-metric-value {{ 'good' if metrics.summary.filter_recall >= 0.8 else 'bad' }}">
+      {{ "%.1f%%"|format(metrics.summary.filter_recall * 100) }}
+    </div>
+    <div class="eval-metric-detail">{{ metrics.filter.true_positives }} TP / {{ metrics.filter.false_negatives }} FN</div>
+  </div>
+  <div class="eval-metric-card">
+    <div class="eval-metric-label">Filter F1</div>
+    <div class="eval-metric-value {{ 'good' if metrics.filter.f1 >= 0.8 else 'bad' }}">
+      {{ "%.1f%%"|format(metrics.filter.f1 * 100) }}
+    </div>
+    <div class="eval-metric-detail">Harmonic mean of P &amp; R</div>
+  </div>
+  <div class="eval-metric-card">
+    <div class="eval-metric-label">Label Accuracy</div>
+    <div class="eval-metric-value {{ 'good' if metrics.summary.overall_label_accuracy >= 0.7 else ('warn-text' if metrics.summary.overall_label_accuracy >= 0.5 else 'bad') }}">
+      {{ "%.1f%%"|format(metrics.summary.overall_label_accuracy * 100) }}
+    </div>
+    <div class="eval-metric-detail">Across {{ metrics.sample_size.soil_confirmed_with_predictions }} soil images</div>
+  </div>
+</div>
+
+<!-- ── B: Filter Performance (2x2 confusion matrix) ──────────────────────── -->
+<section class="eval-section">
+  <div class="section-head">
+    <h2>Filter Performance</h2>
+    <p class="subtitle">Binary soil-vs-not-soil classification ({{ metrics.sample_size.total_annotated }} samples)</p>
+  </div>
+  <div class="eval-filter-matrix">
+    <table class="eval-confusion-table eval-confusion-small">
+      <thead>
+        <tr>
+          <th></th>
+          <th>Predicted Soil</th>
+          <th>Predicted Not-Soil</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th>Actual Soil</th>
+          <td class="eval-cm-cell eval-cm-good">{{ metrics.filter.true_positives }}<br><span class="eval-cm-label">TP</span></td>
+          <td class="eval-cm-cell eval-cm-bad">{{ metrics.filter.false_negatives }}<br><span class="eval-cm-label">FN</span></td>
+        </tr>
+        <tr>
+          <th>Actual Not-Soil</th>
+          <td class="eval-cm-cell eval-cm-bad">{{ metrics.filter.false_positives }}<br><span class="eval-cm-label">FP</span></td>
+          <td class="eval-cm-cell eval-cm-good">{{ metrics.filter.true_negatives }}<br><span class="eval-cm-label">TN</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ── C: Category Accuracy Ranking ──────────────────────────────────────── -->
+<section class="eval-section">
+  <div class="section-head">
+    <h2>Category Accuracy Ranking</h2>
+    <p class="subtitle">Label accuracy per category, ranked best to worst</p>
+  </div>
+  <div class="eval-chart-wrap">
+    <canvas id="category-bar-chart"></canvas>
+  </div>
+</section>
+
+<!-- ── D: Per-Category Details ────────────────────────────────────────────── -->
+<section class="eval-section">
+  <div class="section-head">
+    <h2>Per-Category Details</h2>
+    <p class="subtitle">Expand each category to see precision/recall and confusion matrix</p>
+  </div>
+  <div class="eval-categories">
+    {% for cat_name, cat_acc in metrics.summary.category_ranking %}
+    {% set cat = metrics.labels[cat_name] %}
+    <div class="eval-category-card" data-category="{{ cat_name }}">
+      <button class="eval-category-toggle" type="button" aria-expanded="false">
+        <span class="eval-cat-header">
+          <span class="eval-cat-name">{{ cat_name | replace('_', ' ') | title }}</span>
+          <span class="eval-cat-acc {{ 'good' if cat_acc >= 0.75 else ('warn-text' if cat_acc >= 0.5 else 'bad') }}">
+            {{ "%.1f%%"|format(cat_acc * 100) }}
+          </span>
+          <span class="text-muted">({{ cat.correct }}/{{ cat.total }})</span>
+        </span>
+        <span class="eval-cat-chevron">&#9654;</span>
+      </button>
+      <div class="eval-category-body" hidden>
+        <!-- Precision / Recall table -->
+        <h4>Precision &amp; Recall</h4>
+        <table class="eval-pr-table">
+          <thead>
+            <tr><th>Label</th><th>Precision</th><th>Recall</th><th>Support</th></tr>
+          </thead>
+          <tbody>
+            {% for label, stats in cat.per_label|dictsort %}
+            <tr>
+              <td>{{ label | title }}</td>
+              <td class="{{ 'good' if stats.precision >= 0.7 else ('warn-text' if stats.precision >= 0.4 else 'bad') }}">
+                {{ "%.1f%%"|format(stats.precision * 100) }}
+              </td>
+              <td class="{{ 'good' if stats.recall >= 0.7 else ('warn-text' if stats.recall >= 0.4 else 'bad') }}">
+                {{ "%.1f%%"|format(stats.recall * 100) }}
+              </td>
+              <td class="text-muted">{{ stats.support }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <!-- Confusion matrix -->
+        <h4>Confusion Matrix</h4>
+        <div class="eval-cm-wrap" data-cm="{{ cat.confusion_matrix | tojson | e }}">
+          <!-- rendered by JS -->
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<!-- ── E: Confidence Calibration ─────────────────────────────────────────── -->
+<section class="eval-section">
+  <div class="section-head">
+    <h2>Confidence Calibration</h2>
+    <p class="subtitle">Accuracy within confidence bins — ideally rises with confidence</p>
+  </div>
+  <div class="eval-chart-wrap eval-chart-wide">
+    <canvas id="calibration-chart"></canvas>
+  </div>
+</section>
+
+<!-- ── F: Sample Browser ─────────────────────────────────────────────────── -->
+<section class="eval-section">
+  <div class="section-head">
+    <h2>Sample Browser</h2>
+    <p class="subtitle">Browse annotated images with predicted vs ground truth labels</p>
+  </div>
+  <div class="filter-bar">
+    <select id="eval-filter-correct" class="filter-select">
+      <option value="">All results</option>
+      <option value="correct">Correct only</option>
+      <option value="incorrect">Incorrect only</option>
+    </select>
+    <select id="eval-filter-category" class="filter-select">
+      <option value="">All categories</option>
+      {% for cat_name, _ in metrics.summary.category_ranking %}
+      <option value="{{ cat_name }}">{{ cat_name | replace('_', ' ') | title }}</option>
+      {% endfor %}
+    </select>
+    <select id="eval-filter-soil" class="filter-select">
+      <option value="">All soil status</option>
+      <option value="soil">Soil images</option>
+      <option value="not_soil">Not soil</option>
+    </select>
+  </div>
+  <div id="eval-results-summary" class="results-summary"></div>
+  <div id="eval-sample-grid" class="eval-sample-grid"></div>
+  <div id="eval-pagination" class="pagination"></div>
+</section>
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if metrics %}
+<script>
+  window.EVAL_METRICS = {{ metrics | tojson }};
+</script>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    if (window.initEvalDashboard) window.initEvalDashboard();
+  });
+</script>
+{% endif %}
+{% endblock %}

@@ -527,6 +527,38 @@ def create_app(config_dir: Path | None = None) -> Flask:
 
         return jsonify(result)
 
+    # ─── Evaluation results route ─────────────────────────────────────────
+
+    @app.route("/evaluation")
+    def evaluation_page():
+        """Evaluation results dashboard."""
+        eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
+        metrics_path = eval_dir / "metrics.json"
+        if not metrics_path.exists():
+            return render_template(
+                "evaluation.html",
+                steps=STEPS,
+                categories=LABEL_CATEGORIES,
+                metrics=None,
+            )
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        return render_template(
+            "evaluation.html",
+            steps=STEPS,
+            categories=LABEL_CATEGORIES,
+            metrics=metrics,
+        )
+
+    @app.route("/api/eval/metrics")
+    def api_eval_metrics():
+        """Return evaluation metrics JSON."""
+        eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
+        metrics_path = eval_dir / "metrics.json"
+        if not metrics_path.exists():
+            return jsonify({"error": "No evaluation metrics found. Run: soil-shazam-data-collector eval-report"}), 404
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        return jsonify(metrics)
+
     # ─── Evaluation / annotation routes ───────────────────────────────────
 
     @app.route("/annotate")
