@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import io
 import json
+from collections import Counter
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory
 from PIL import Image
 
 from .helpers import (
@@ -14,9 +15,11 @@ from .helpers import (
     STEPS,
     _APP_DIR,
     _PROJECT_ROOT,
+    build_pipeline_precheck,
     build_overlay_score_map,
     build_resize_hash_map,
     build_soil_score_map,
+    clustering_root,
     compute_filter_metrics,
     extract_source,
     find_raw_original,
@@ -28,10 +31,12 @@ from .helpers import (
     list_dedup_removed_images,
     list_images,
     list_rejected_images,
+    load_json_file,
     load_dedup_groups,
     load_full_labels,
     load_labels,
     load_yaml,
+    latest_cluster_run,
     resolve,
 )
 from .stats import compute_step_stats
@@ -59,10 +64,11 @@ def create_app(config_dir: Path | None = None) -> Flask:
 
     @app.route("/")
     def dashboard():
+        precheck = build_pipeline_precheck(cfg)
         step_stats = []
         for step in STEPS:
             stats = compute_step_stats(step["id"], cfg)
-            step_stats.append({**step, "stats": stats})
+            step_stats.append({**step, "stats": stats, "url": step.get("url", f"/step/{step['id']}")})
 
         funnel_rows = []
         anomalies = []
@@ -71,7 +77,11 @@ def create_app(config_dir: Path | None = None) -> Flask:
             curr_step = step_stats[idx]
             prev_count = int(prev_step["stats"].get("count", 0))
             curr_count = int(curr_step["stats"].get("count", 0))
-            conversion_pct = (curr_count / prev_count * 100.0) if prev_count else None
+            is_cluster_not_run = (
+                curr_step["id"] == "cluster"
+                and not curr_step["stats"].get("has_run", False)
+            )
+            conversion_pct = None if is_cluster_not_run else ((curr_count / prev_count * 100.0) if prev_count else None)
             drop_pct = (100.0 - conversion_pct) if conversion_pct is not None else None
             funnel_rows.append(
                 {
@@ -136,13 +146,20 @@ def create_app(config_dir: Path | None = None) -> Flask:
             categories=LABEL_CATEGORIES,
             funnel_rows=funnel_rows,
             anomalies=anomalies,
+            precheck=precheck,
         )
+
+    @app.route("/api/precheck")
+    def api_precheck():
+        return jsonify({"checks": build_pipeline_precheck(cfg)})
 
     @app.route("/step/<step_id>")
     def step_browser(step_id):
         step = get_step(step_id)
         if not step:
             return "Step not found", 404
+        if step_id == "cluster":
+            return redirect("/cluster")
 
         view = request.args.get("view", "kept", type=str)
         stats = compute_step_stats(step_id, cfg)
@@ -167,6 +184,79 @@ def create_app(config_dir: Path | None = None) -> Flask:
             label_options_all=label_options_all,
             steps=STEPS,
             filter_thresholds=filter_thresholds,
+        )
+
+    @app.route("/cluster")
+    def cluster_page():
+        stats = compute_step_stats("cluster", cfg)
+        run_dir = latest_cluster_run(cfg)
+        if not run_dir:
+            return render_template(
+                "cluster.html",
+                steps=STEPS,
+                stats=stats,
+                run_dir=None,
+                summary=None,
+                top_review=[],
+                top_clusters=[],
+                suggestion_preview=[],
+                flagged_distribution={},
+            )
+
+        summary = load_json_file(run_dir / "summary.json", {})
+        review_payload = load_json_file(run_dir / "review_queue.json", {})
+        cluster_payload = load_json_file(run_dir / "clusters.json", {})
+        suggestions_payload = load_json_file(run_dir / "suggestions.json", {})
+
+        review_items = review_payload.get("items", []) if isinstance(review_payload, dict) else []
+        cluster_items = cluster_payload.get("clusters", []) if isinstance(cluster_payload, dict) else []
+        suggestion_items = suggestions_payload.get("items", []) if isinstance(suggestions_payload, dict) else []
+
+        top_review = review_items[:150]
+        top_clusters = sorted(
+            cluster_items,
+            key=lambda item: int(item.get("size", 0)),
+            reverse=True,
+        )[:20]
+
+        flagged = Counter()
+        for item in review_items:
+            for cat in item.get("flagged_categories", []):
+                flagged[cat] += 1
+
+        return render_template(
+            "cluster.html",
+            steps=STEPS,
+            stats=stats,
+            run_dir=str(run_dir),
+            summary=summary,
+            top_review=top_review,
+            top_clusters=top_clusters,
+            suggestion_preview=suggestion_items[:120],
+            flagged_distribution=dict(flagged.most_common()),
+        )
+
+    @app.route("/api/cluster/latest")
+    def api_cluster_latest():
+        run_dir = latest_cluster_run(cfg)
+        if not run_dir:
+            return jsonify(
+                {
+                    "error": (
+                        "No cluster run found. Run: "
+                        "soil-shazam-data-collector cluster-review"
+                    ),
+                    "clustering_root": str(clustering_root(cfg)),
+                }
+            ), 404
+        return jsonify(
+            {
+                "run_dir": str(run_dir),
+                "summary": load_json_file(run_dir / "summary.json", {}),
+                "clusters": load_json_file(run_dir / "clusters.json", {}),
+                "review_queue": load_json_file(run_dir / "review_queue.json", {}),
+                "suggestions": load_json_file(run_dir / "suggestions.json", {}),
+            }
         )
 
     # ─── Image serving ────────────────────────────────────────────────────
@@ -542,7 +632,7 @@ def create_app(config_dir: Path | None = None) -> Flask:
     @app.route("/evaluation")
     def evaluation_page():
         """Evaluation results dashboard."""
-        eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
+        eval_dir = resolve(cfg["paths"]["labeled"]).parent / "evaluation"
         metrics_path = eval_dir / "metrics.json"
         if not metrics_path.exists():
             return render_template(
@@ -562,7 +652,7 @@ def create_app(config_dir: Path | None = None) -> Flask:
     @app.route("/api/eval/metrics")
     def api_eval_metrics():
         """Return evaluation metrics JSON."""
-        eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
+        eval_dir = resolve(cfg["paths"]["labeled"]).parent / "evaluation"
         metrics_path = eval_dir / "metrics.json"
         if not metrics_path.exists():
             return jsonify({"error": "No evaluation metrics found. Run: soil-shazam-data-collector eval-report"}), 404
@@ -584,7 +674,7 @@ def create_app(config_dir: Path | None = None) -> Flask:
     @app.route("/api/eval/sample")
     def api_eval_sample():
         """Return the evaluation sample with server-side filtering & pagination."""
-        eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
+        eval_dir = resolve(cfg["paths"]["labeled"]).parent / "evaluation"
         sample_path = eval_dir / "sample.json"
         if not sample_path.exists():
             return jsonify({
@@ -682,7 +772,7 @@ def create_app(config_dir: Path | None = None) -> Flask:
                     provided_labels[cat] = val.strip()
 
         # Load sample, update annotation, save
-        eval_dir = resolve(cfg["paths"]["dataset"]).parent / "evaluation"
+        eval_dir = resolve(cfg["paths"]["labeled"]).parent / "evaluation"
         sample_path = eval_dir / "sample.json"
         if not sample_path.exists():
             return jsonify({"error": "No evaluation sample"}), 404
@@ -731,7 +821,11 @@ def create_app(config_dir: Path | None = None) -> Flask:
     @app.route("/images/eval/<path:filename>")
     def serve_eval_image(filename):
         """Serve images for the evaluation annotation UI."""
-        # Try dataset images first, then deduped (for rejected samples)
+        # Try labeled images first (accepted sample), then dataset, then deduped.
+        labeled_img_dir = resolve(cfg["paths"]["labeled"]) / "images"
+        if (labeled_img_dir / filename).is_file():
+            return send_from_directory(labeled_img_dir, filename)
+
         dataset_img_dir = resolve(cfg["paths"]["dataset"]) / "images"
         if (dataset_img_dir / filename).is_file():
             return send_from_directory(dataset_img_dir, filename)

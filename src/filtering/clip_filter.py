@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from utils import CLIPModel, collect_image_paths, load_image
+from utils import CLIPModel, canonical_image_name, collect_image_paths, load_image
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def run_clip_filter(
     positive_prompts: list[str],
     negative_prompts: list[str],
     threshold: float = 0.30,
-    flagged_stems: set[str] | None = None,
+    flagged_names: set[str] | None = None,
     resume: bool = False,
 ) -> dict:
     """Filter images using CLIP — keep only soil-related images.
@@ -36,7 +36,8 @@ def run_clip_filter(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     image_paths = collect_image_paths(input_dir)
-    flagged_stems = flagged_stems or set()
+    flagged_names = flagged_names or set()
+    name_root = input_dir / "images" if (input_dir / "images").is_dir() else input_dir
 
     stats = {"total": len(image_paths), "kept": 0, "discarded_soil": 0,
              "discarded_overlay": 0, "errors": 0}
@@ -64,20 +65,21 @@ def run_clip_filter(
             images = []
             valid_paths = []
             for p in batch_paths:
+                out_name = canonical_image_name(p, name_root)
                 # Skip overlay-flagged (watermark/text)
-                if p.stem in flagged_stems:
+                if out_name in flagged_names:
                     stats["discarded_overlay"] += 1
-                    writer.writerow([p.name, "N/A", "N/A", "overlay"])
+                    writer.writerow([out_name, "N/A", "N/A", "overlay"])
                     continue
                 # Skip already processed
-                if p.name in existing:
+                if out_name in existing:
                     stats["kept"] += 1
                     continue
 
                 img = load_image(p)
                 if img is not None:
                     images.append(img)
-                    valid_paths.append(p)
+                    valid_paths.append((p, out_name))
                 else:
                     stats["errors"] += 1
 
@@ -88,15 +90,15 @@ def run_clip_filter(
             pos_scores = (img_features @ pos_features.T).mean(dim=1)
             neg_scores = (img_features @ neg_features.T).mean(dim=1)
 
-            for path, pos_score, neg_score in zip(valid_paths, pos_scores, neg_scores):
+            for (path, out_name), pos_score, neg_score in zip(valid_paths, pos_scores, neg_scores):
                 pos_val = pos_score.item()
                 neg_val = neg_score.item()
                 keep = pos_val >= threshold and pos_val > neg_val
 
-                writer.writerow([path.name, f"{pos_val:.4f}", f"{neg_val:.4f}", keep])
+                writer.writerow([out_name, f"{pos_val:.4f}", f"{neg_val:.4f}", keep])
 
                 if keep:
-                    dest = output_dir / path.name
+                    dest = output_dir / out_name
                     shutil.copy2(path, dest)
                     stats["kept"] += 1
                 else:

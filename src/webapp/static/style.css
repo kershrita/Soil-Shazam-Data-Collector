@@ -87,7 +87,79 @@ h1 { font-size: 1.5rem; margin-bottom: .25rem; }
 .subtitle { color: var(--text-muted); margin-bottom: 1.5rem; }
 .section-head h2 { font-size: 1.05rem; margin-bottom: .2rem; }
 .section-head .subtitle { margin-bottom: .75rem; font-size: .85rem; }
-.dashboard-actions { margin-bottom: 1rem; }
+.dashboard-actions {
+  margin-bottom: 1rem;
+  display: flex;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+
+.precheck-section {
+  margin-bottom: 1.25rem;
+}
+.precheck-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: .6rem;
+}
+.precheck-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .75rem .85rem;
+  box-shadow: var(--shadow);
+}
+.precheck-card.ready {
+  border-left: 4px solid var(--good);
+}
+.precheck-card.blocked {
+  border-left: 4px solid var(--bad);
+}
+.precheck-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  margin-bottom: .35rem;
+}
+.precheck-head h3 {
+  margin: 0;
+  font-size: .95rem;
+}
+.precheck-status {
+  font-size: .72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: .1rem .4rem;
+  border-radius: 999px;
+}
+.precheck-status.ready {
+  background: var(--good-bg);
+  color: var(--good);
+}
+.precheck-status.blocked {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+.precheck-details {
+  font-size: .82rem;
+  color: var(--text-muted);
+  margin-bottom: .35rem;
+}
+.precheck-missing {
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+  margin-bottom: .35rem;
+}
+.precheck-missing-item {
+  font-size: .76rem;
+  color: var(--text-muted);
+}
+.precheck-runfirst {
+  font-size: .76rem;
+}
 
 /* ─── Pipeline flow (dashboard) ───────────────────────────────────────────── */
 .pipeline-flow {

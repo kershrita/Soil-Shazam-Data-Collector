@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from utils import CLIPModel, collect_image_paths, load_image
+from utils import CLIPModel, canonical_image_name, collect_image_paths, load_image
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ def run_clip_labeling(
         return []
 
     logger.info(f"CLIP labeling: processing {len(image_paths)} images across {len(label_prompts)} categories")
+    name_root = input_dir / "images" if (input_dir / "images").is_dir() else input_dir
 
     # Pre-encode all prompts per category.
     # Each label may have a list of prompts; scores are averaged across them (ensemble).
@@ -103,14 +104,15 @@ def run_clip_labeling(
         encoded_items: list[tuple[Path, bool]] = []
 
         for p in batch_paths:
-            should_label = p.name not in existing_images
-            should_embed = persist_embeddings and p.name not in embedding_store
+            image_name = canonical_image_name(p, name_root)
+            should_label = image_name not in existing_images
+            should_embed = persist_embeddings and image_name not in embedding_store
             if not should_label and not should_embed:
                 continue
             img = load_image(p)
             if img is not None:
                 images.append(img)
-                encoded_items.append((p, should_label))
+                encoded_items.append((p, image_name, should_label))
 
         if not images:
             continue
@@ -120,14 +122,14 @@ def run_clip_labeling(
         img_features_arr = np.asarray(img_features, dtype=np.float32)
 
         # Score against each category
-        for idx, (path, should_label) in enumerate(encoded_items):
+        for idx, (path, image_name, should_label) in enumerate(encoded_items):
             if persist_embeddings:
-                embedding_store[path.name] = img_features_arr[idx]
+                embedding_store[image_name] = img_features_arr[idx]
 
             if not should_label:
                 continue
 
-            entry: dict = {"image": path.name, "scores": {}}
+            entry: dict = {"image": image_name, "scores": {}}
             img_feat = img_features[idx : idx + 1]  # (1, embed_dim)
 
             for category, cdata in category_data.items():
@@ -154,7 +156,7 @@ def run_clip_labeling(
             all_labels.append(entry)
 
             # Copy image to output
-            dest = images_dir / path.name
+            dest = images_dir / image_name
             if not dest.exists():
                 shutil.copy2(path, dest)
 

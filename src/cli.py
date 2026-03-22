@@ -12,13 +12,15 @@ from typing import Optional
 import typer
 import yaml
 
-from utils import setup_logging
+from utils import collect_image_paths, setup_logging
 
 app = typer.Typer(
     name="soil-shazam-data-collector",
     help="Soil Shazam Data Collector: automated soil image dataset mining pipeline using CLIP.",
     add_completion=False,
 )
+
+RECOMMENDED_FLOW = "download -> resize -> deduplicate -> filter -> label -> eval -> cluster"
 
 
 class DownloadSource(str, Enum):
@@ -27,9 +29,10 @@ class DownloadSource(str, Enum):
     google = "google"
     flickr = "flickr"
 
-# Root of project — locate config relative to this file
+
+# Root of project; locate config relative to this file
 _PKG_ROOT = Path(__file__).resolve().parent
-_PROJECT_ROOT = _PKG_ROOT.parent  # src → project root
+_PROJECT_ROOT = _PKG_ROOT.parent
 
 
 def _load_yaml(path: Path) -> dict:
@@ -37,7 +40,6 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _get_config(config_dir: Path | None = None) -> dict:
-    """Load pipeline.yaml config."""
     config_dir = config_dir or _PROJECT_ROOT / "config"
     return _load_yaml(config_dir / "pipeline.yaml")
 
@@ -54,7 +56,6 @@ def _get_queries(config_dir: Path | None = None) -> list[str]:
 
 
 def _resolve_path(cfg_path: str) -> Path:
-    """Resolve a config-relative path to absolute."""
     p = Path(cfg_path)
     if not p.is_absolute():
         p = _PROJECT_ROOT / p
@@ -62,13 +63,54 @@ def _resolve_path(cfg_path: str) -> Path:
 
 
 def _get_workers(cfg: dict) -> int:
-    """Return shared worker count from config (0 → os.cpu_count)."""
     import os
+
     w = cfg.get("num_workers", 0)
     return w if w > 0 else (os.cpu_count() or 4)
 
 
-# ─── DOWNLOAD ────────────────────────────────────────────────────────────────
+def _image_count(directory: Path) -> int:
+    if not directory.exists():
+        return 0
+    return len(collect_image_paths(directory))
+
+
+def _find_first_input(
+    candidates: list[tuple[str, Path]],
+) -> tuple[str, Path, int] | None:
+    for label, path in candidates:
+        count = _image_count(path)
+        if count > 0:
+            return label, path, count
+    return None
+
+
+def _labels_file(base_dir: Path) -> Path | None:
+    labels_full = base_dir / "labels_full.json"
+    labels_basic = base_dir / "labels.json"
+    if labels_full.exists():
+        return labels_full
+    if labels_basic.exists():
+        return labels_basic
+    return None
+
+
+def _exit_with_prereq(
+    message: str,
+    run_first: str | None = None,
+    exit_code: int = 1,
+) -> None:
+    typer.echo(f"Error: {message}")
+    if run_first:
+        typer.echo(f"Run this first: {run_first}")
+    typer.echo(f"Recommended flow: {RECOMMENDED_FLOW}")
+    raise typer.Exit(exit_code)
+
+
+def _fmt_pct(value) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value * 100:.1f}%"
 
 
 @app.command()
@@ -95,7 +137,6 @@ def download(
     max_retries = max(0, int(dl_cfg.get("max_retries", 0)))
     raw_dir = _resolve_path(cfg["paths"]["raw"])
 
-    # Build downloaders
     from downloader import BingDownloader, FlickrDownloader, GoogleDownloader
 
     downloaders = []
@@ -107,25 +148,27 @@ def download(
         downloaders.append(FlickrDownloader())
 
     if not downloaders:
-        logger.error(f"No downloaders selected for source={source.value}")
+        logger.error("No downloaders selected for source=%s", source.value)
         raise typer.Exit(2)
 
     logger.info(
-        f"Downloading images: {len(queries)} queries × {len(downloaders)} sources, "
-        f"limit={per_query_limit}/query/source, workers={workers}/source"
+        "Downloading images: %s queries x %s sources, limit=%s/query/source, workers=%s/source",
+        len(queries),
+        len(downloaders),
+        per_query_limit,
+        workers,
     )
 
-    # Thread-safe counter
-    _lock = threading.Lock()
+    lock = threading.Lock()
     totals: dict[str, int] = {}
 
-    def _run_source(dl):
-        """Run all queries for one source using a thread pool."""
+    def run_source(dl):
         import time
+
         source_name = dl.source_name
         source_total = 0
 
-        def _download_query(query: str) -> int:
+        def download_query(query: str) -> int:
             paths = dl.download(
                 query,
                 per_query_limit,
@@ -133,39 +176,34 @@ def download(
                 timeout,
                 max_retries=max_retries,
             )
-            time.sleep(request_delay)  # rate-limit between queries
+            time.sleep(request_delay)
             return len(paths)
 
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=source_name) as pool:
-            futures = {pool.submit(_download_query, q): q for q in queries}
+            futures = {pool.submit(download_query, q): q for q in queries}
             for future in as_completed(futures):
                 try:
-                    count = future.result()
-                    source_total += count
-                except Exception as e:
+                    source_total += future.result()
+                except Exception as err:  # noqa: BLE001
                     query = futures[future]
-                    logger.error(f"[{source_name}] Query '{query}' failed: {e}")
+                    logger.error("[%s] Query '%s' failed: %s", source_name, query, err)
 
-        with _lock:
+        with lock:
             totals[source_name] = source_total
-        logger.info(f"[{source_name}] Source complete: {source_total} images")
+        logger.info("[%s] Source complete: %s images", source_name, source_total)
 
-    # Run all sources in parallel (each source gets its own thread)
-    source_threads = []
+    threads = []
     for dl in downloaders:
-        t = threading.Thread(target=_run_source, args=(dl,), name=f"source-{dl.source_name}")
+        t = threading.Thread(target=run_source, args=(dl,), name=f"source-{dl.source_name}")
         t.start()
-        source_threads.append(t)
+        threads.append(t)
 
-    for t in source_threads:
+    for t in threads:
         t.join()
 
     grand_total = sum(totals.values())
     breakdown = ", ".join(f"{k}={v}" for k, v in totals.items())
-    logger.info(f"Download complete: {grand_total} total images ({breakdown}) in {raw_dir}")
-
-
-# ─── RESIZE ──────────────────────────────────────────────────────────────────
+    logger.info("Download complete: %s total images (%s) in %s", grand_total, breakdown, raw_dir)
 
 
 @app.command()
@@ -182,6 +220,13 @@ def resize(
     raw_dir = _resolve_path(cfg["paths"]["raw"])
     resized_dir = _resolve_path(cfg["paths"]["resized"])
 
+    raw_count = _image_count(raw_dir)
+    if raw_count == 0:
+        _exit_with_prereq(
+            message=f"No downloaded images found in {raw_dir}.",
+            run_first="soil-shazam-data-collector download",
+        )
+
     from filtering import run_resolution_filter
 
     run_resolution_filter(
@@ -195,7 +240,51 @@ def resize(
     )
 
 
-# ─── FILTER ──────────────────────────────────────────────────────────────────
+@app.command()
+def dedup(
+    config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
+    log_level: str = typer.Option("INFO", help="Logging level"),
+):
+    """Deduplicate images using perceptual hashing."""
+    setup_logging(log_level)
+    logger = logging.getLogger(__name__)
+
+    cfg = _get_config(config_dir)
+    dedup_cfg = cfg["dedup"]
+
+    raw_dir = _resolve_path(cfg["paths"]["raw"])
+    resized_dir = _resolve_path(cfg["paths"]["resized"])
+    deduped_dir = _resolve_path(cfg["paths"]["deduped"])
+
+    selected = _find_first_input(
+        [
+            ("resize", resized_dir),
+            ("download", raw_dir),
+        ]
+    )
+    if not selected:
+        _exit_with_prereq(
+            message="No images available for deduplication.",
+            run_first="soil-shazam-data-collector download",
+        )
+
+    source_step, source_dir, source_count = selected
+    if source_step != "resize":
+        logger.warning(
+            "dedup: using %s images (%s) because resized output is missing",
+            source_step,
+            source_dir,
+        )
+    logger.info("dedup: input source=%s count=%s", source_step, source_count)
+
+    from dedup import run_deduplication
+
+    run_deduplication(
+        input_dir=source_dir,
+        output_dir=deduped_dir,
+        phash_threshold=dedup_cfg["phash_threshold"],
+        num_workers=_get_workers(cfg),
+    )
 
 
 @app.command()
@@ -210,24 +299,49 @@ def filter(
 ):
     """Filter images: remove watermarks and non-soil images using CLIP."""
     setup_logging(log_level)
+    logger = logging.getLogger(__name__)
 
     cfg = _get_config(config_dir)
     prompts = _get_prompts(config_dir)
     filter_cfg = cfg["filter"]
     clip_cfg = cfg["clip"]
 
+    raw_dir = _resolve_path(cfg["paths"]["raw"])
+    resized_dir = _resolve_path(cfg["paths"]["resized"])
     deduped_dir = _resolve_path(cfg["paths"]["deduped"])
     filtered_dir = _resolve_path(cfg["paths"]["filtered"])
     logs_dir = _resolve_path(cfg["paths"]["logs"])
     logs_dir.mkdir(parents=True, exist_ok=True)
 
+    selected = _find_first_input(
+        [
+            ("dedup", deduped_dir),
+            ("resize", resized_dir),
+            ("download", raw_dir),
+        ]
+    )
+    if not selected:
+        _exit_with_prereq(
+            message="No images available for filter.",
+            run_first="soil-shazam-data-collector download",
+        )
+
+    source_step, source_dir, source_count = selected
+    if source_step != "dedup":
+        logger.warning(
+            "filter: using %s images (%s) because dedup output is missing",
+            source_step,
+            source_dir,
+        )
+    logger.info("filter: input source=%s count=%s", source_step, source_count)
+
     if not resume and filtered_dir.exists():
         import shutil
+
         shutil.rmtree(filtered_dir)
 
     soil_threshold = threshold if threshold > 0 else filter_cfg["soil_threshold"]
 
-    # Load CLIP model
     from utils import get_clip_model
 
     clip_model = get_clip_model(
@@ -237,11 +351,10 @@ def filter(
         batch_size=clip_cfg["batch_size"],
     )
 
-    # Stage 1: Overlay detection (watermarks + text)
-    from filtering import run_overlay_filter
+    from filtering import run_clip_filter, run_overlay_filter
 
-    overlay_stems = run_overlay_filter(
-        input_dir=deduped_dir,
+    flagged_names = run_overlay_filter(
+        input_dir=source_dir,
         log_path=logs_dir / "overlay_filter.csv",
         clip_model=clip_model,
         overlay_prompts=prompts["filter_overlay"]["overlay"],
@@ -249,22 +362,18 @@ def filter(
         overlay_margin=filter_cfg["overlay_margin"],
     )
 
-    # Stage 2: Soil filtering
-    from filtering import run_clip_filter
-
     run_clip_filter(
-        input_dir=deduped_dir,
+        input_dir=source_dir,
         output_dir=filtered_dir,
         log_path=logs_dir / "soil_filter.csv",
         clip_model=clip_model,
         positive_prompts=prompts["filter_soil"]["positive"],
         negative_prompts=prompts["filter_soil"]["negative"],
         threshold=soil_threshold,
-        flagged_stems=overlay_stems,
+        flagged_names=flagged_names,
         resume=resume,
     )
 
-    # Persist actual thresholds used for this filter run (UI can read these later).
     run_cfg_path = logs_dir / "filter_run_config.json"
     run_cfg = {
         "soil_threshold": float(soil_threshold),
@@ -274,23 +383,47 @@ def filter(
     run_cfg_path.write_text(json.dumps(run_cfg, indent=2), encoding="utf-8")
 
 
-# ─── LABEL ───────────────────────────────────────────────────────────────────
-
-
 @app.command()
 def label(
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
-    """Auto-label filtered soil images using CLIP similarity scoring."""
+    """Auto-label images using CLIP similarity scoring."""
     setup_logging(log_level)
+    logger = logging.getLogger(__name__)
 
     cfg = _get_config(config_dir)
     prompts = _get_prompts(config_dir)
     clip_cfg = cfg["clip"]
 
+    raw_dir = _resolve_path(cfg["paths"]["raw"])
+    resized_dir = _resolve_path(cfg["paths"]["resized"])
+    deduped_dir = _resolve_path(cfg["paths"]["deduped"])
     filtered_dir = _resolve_path(cfg["paths"]["filtered"])
     labeled_dir = _resolve_path(cfg["paths"]["labeled"])
+
+    selected = _find_first_input(
+        [
+            ("filter", filtered_dir),
+            ("dedup", deduped_dir),
+            ("resize", resized_dir),
+            ("download", raw_dir),
+        ]
+    )
+    if not selected:
+        _exit_with_prereq(
+            message="No images available for label.",
+            run_first="soil-shazam-data-collector download",
+        )
+
+    source_step, source_dir, source_count = selected
+    if source_step != "filter":
+        logger.warning(
+            "label: using %s images (%s) because filtered output is missing",
+            source_step,
+            source_dir,
+        )
+    logger.info("label: input source=%s count=%s", source_step, source_count)
 
     from utils import get_clip_model
 
@@ -304,7 +437,7 @@ def label(
     from labeling import run_clip_labeling
 
     run_clip_labeling(
-        input_dir=filtered_dir,
+        input_dir=source_dir,
         output_dir=labeled_dir,
         clip_model=clip_model,
         label_prompts=prompts["labeling"],
@@ -312,36 +445,6 @@ def label(
         pretrained=clip_cfg["pretrained"],
         persist_embeddings=True,
     )
-
-
-# ─── DEDUP ───────────────────────────────────────────────────────────────────
-
-
-@app.command()
-def dedup(
-    config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
-    log_level: str = typer.Option("INFO", help="Logging level"),
-):
-    """Deduplicate images using perceptual hashing."""
-    setup_logging(log_level)
-
-    cfg = _get_config(config_dir)
-    dedup_cfg = cfg["dedup"]
-
-    resized_dir = _resolve_path(cfg["paths"]["resized"])
-    deduped_dir = _resolve_path(cfg["paths"]["deduped"])
-
-    from dedup import run_deduplication
-
-    run_deduplication(
-        input_dir=resized_dir,
-        output_dir=deduped_dir,
-        phash_threshold=dedup_cfg["phash_threshold"],
-        num_workers=_get_workers(cfg),
-    )
-
-
-# ─── EXPORT ──────────────────────────────────────────────────────────────────
 
 
 @app.command()
@@ -357,6 +460,12 @@ def export(
     dataset_dir = _resolve_path(cfg["paths"]["dataset"])
     corrections_path = dataset_dir / "verification" / "corrections.json"
 
+    if _labels_file(labeled_dir) is None:
+        _exit_with_prereq(
+            message=f"Missing labeled outputs in {labeled_dir}.",
+            run_first="soil-shazam-data-collector label",
+        )
+
     from export import run_export
 
     run_export(
@@ -364,9 +473,6 @@ def export(
         corrections_path=corrections_path if corrections_path.exists() else None,
         output_dir=dataset_dir,
     )
-
-
-# ─── RUN ALL ─────────────────────────────────────────────────────────────────
 
 
 @app.command(name="run-all")
@@ -378,47 +484,51 @@ def run_all(
     limit: int = typer.Option(0, help="Max images per query per source (0 = use config)"),
     threshold: float = typer.Option(0, help="Soil filter threshold (0 = use config)"),
     skip_download: bool = typer.Option(False, help="Skip download step (use existing raw images)"),
+    skip_resize: bool = typer.Option(False, help="Skip resize step"),
+    skip_dedup: bool = typer.Option(False, help="Skip dedup step"),
+    skip_filter: bool = typer.Option(False, help="Skip filter step"),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
-    """Run the complete pipeline end-to-end."""
+    """Run pipeline to labeled outputs with optional step skipping."""
     setup_logging(log_level)
     logger = logging.getLogger(__name__)
 
-    logger.info("=" * 60)
-    logger.info("SOIL IMAGE DATA COLLECTOR — FULL PIPELINE")
-    logger.info("=" * 60)
+    logger.info("=" * 64)
+    logger.info("SOIL IMAGE DATA COLLECTOR - RUN ALL")
+    logger.info("Recommended flow: %s", RECOMMENDED_FLOW)
+    logger.info("=" * 64)
 
-    # Step 1: Download
     if not skip_download:
-        logger.info("\n>>> STEP 1/5: Downloading images...")
+        logger.info("Step: download")
         download(source=source, limit=limit, config_dir=config_dir, log_level=log_level)
     else:
-        logger.info("\n>>> STEP 1/5: Download SKIPPED")
+        logger.info("Step skipped: download")
 
-    # Step 2: Resize
-    logger.info("\n>>> STEP 2/5: Resolution filter + resize...")
-    resize(config_dir=config_dir, log_level=log_level)
+    if not skip_resize:
+        logger.info("Step: resize")
+        resize(config_dir=config_dir, log_level=log_level)
+    else:
+        logger.info("Step skipped: resize")
 
-    # Step 3: Dedup
-    logger.info("\n>>> STEP 3/5: Perceptual hash deduplication...")
-    dedup(config_dir=config_dir, log_level=log_level)
+    if not skip_dedup:
+        logger.info("Step: dedup")
+        dedup(config_dir=config_dir, log_level=log_level)
+    else:
+        logger.info("Step skipped: dedup")
 
-    # Step 4: Filter
-    logger.info("\n>>> STEP 4/5: Overlay + soil filtering...")
-    filter(threshold=threshold, resume=False, config_dir=config_dir, log_level=log_level)
+    if not skip_filter:
+        logger.info("Step: filter")
+        filter(threshold=threshold, resume=False, config_dir=config_dir, log_level=log_level)
+    else:
+        logger.info("Step skipped: filter")
 
-    # Step 5: Label + Export
-    logger.info("\n>>> STEP 5/5: CLIP feature labeling + export...")
+    logger.info("Step: label")
     label(config_dir=config_dir, log_level=log_level)
-    export(config_dir=config_dir, log_level=log_level)
 
-    logger.info("\n" + "=" * 60)
-    logger.info("PIPELINE COMPLETE")
-    logger.info("=" * 60)
-
-
-# ─── EVALUATION ──────────────────────────────────────────────────────────────
+    logger.info("=" * 64)
+    logger.info("RUN-ALL COMPLETE")
+    logger.info("=" * 64)
 
 
 @app.command(name="eval-sample")
@@ -429,24 +539,30 @@ def eval_sample(
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
-    """Sample random images from the dataset for accuracy evaluation."""
+    """Sample random images from label outputs for accuracy evaluation."""
     setup_logging(log_level)
 
     cfg = _get_config(config_dir)
-    dataset_dir = _resolve_path(cfg["paths"]["dataset"])
-    eval_dir = dataset_dir.parent / "evaluation"
+    labeled_dir = _resolve_path(cfg["paths"]["labeled"])
+    eval_dir = labeled_dir.parent / "evaluation"
+
+    if _labels_file(labeled_dir) is None:
+        _exit_with_prereq(
+            message=f"No label outputs found in {labeled_dir}.",
+            run_first="soil-shazam-data-collector label",
+        )
 
     from evaluation import create_eval_sample
 
     sample_path = create_eval_sample(
-        dataset_dir=dataset_dir,
+        dataset_dir=labeled_dir,
         output_dir=eval_dir,
         n_accepted=n,
         n_rejected=n_rejected,
         seed=seed,
     )
     typer.echo(f"\nSample created: {sample_path}")
-    typer.echo("Next: run 'soil-shazam-data-collector webapp' and go to /annotate to label the sample.")
+    typer.echo("Next: run 'soil-shazam-data-collector webapp' and open /annotate.")
 
 
 @app.command(name="eval-report")
@@ -456,21 +572,32 @@ def eval_report(
 ):
     """Compute accuracy metrics and generate a shareable report."""
     setup_logging(log_level)
-    logger = logging.getLogger(__name__)
 
     cfg = _get_config(config_dir)
-    eval_dir = _resolve_path(cfg["paths"]["dataset"]).parent / "evaluation"
+    labeled_dir = _resolve_path(cfg["paths"]["labeled"])
+    eval_dir = labeled_dir.parent / "evaluation"
+    sample_path = eval_dir / "sample.json"
+
+    if _labels_file(labeled_dir) is None:
+        _exit_with_prereq(
+            message="eval-report requires labels from the label step.",
+            run_first="soil-shazam-data-collector label",
+        )
+    if not sample_path.exists():
+        _exit_with_prereq(
+            message=f"Missing evaluation sample at {sample_path}.",
+            run_first="soil-shazam-data-collector eval-sample",
+        )
 
     from evaluation import compute_metrics, generate_report
 
     metrics = compute_metrics(eval_dir)
     if not metrics:
-        typer.echo("No annotated samples found. Annotate via the webapp first.")
+        typer.echo("No annotated samples found. Annotate the eval sample in the web app first.")
         raise typer.Exit(1)
 
     report_path = generate_report(eval_dir)
 
-    # Print summary
     summary = metrics.get("summary", {})
     sample = metrics.get("sample_size", {})
     filt = metrics.get("filter", {})
@@ -499,10 +626,6 @@ def cluster_review(
         0,
         help="Optional cap for accepted images to process (0 = all).",
     ),
-    force_recompute_embeddings: bool = typer.Option(
-        False,
-        help="Recompute CLIP embeddings even when a valid cache exists.",
-    ),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
@@ -510,33 +633,51 @@ def cluster_review(
     setup_logging(log_level)
 
     cfg = _get_config(config_dir)
-    clip_cfg = cfg["clip"]
     clustering_cfg = cfg.get("clustering", {})
 
     labeled_dir = _resolve_path(cfg["paths"]["labeled"])
-    dataset_dir = _resolve_path(cfg["paths"]["dataset"])
-    clustering_root = dataset_dir.parent / "clustering"
+    data_root = labeled_dir.parent
+    eval_dir = data_root / "evaluation"
+    clustering_root = data_root / "clustering"
 
-    from utils import get_clip_model
+    labels_path = _labels_file(labeled_dir)
+    if labels_path is None:
+        _exit_with_prereq(
+            message=f"cluster-review requires labels from {labeled_dir}.",
+            run_first="soil-shazam-data-collector label",
+        )
 
-    clip_model = get_clip_model(
-        model_name=clip_cfg["model_name"],
-        pretrained=clip_cfg["pretrained"],
-        device=clip_cfg["device"],
-        batch_size=clip_cfg["batch_size"],
-    )
+    embeddings_path = labeled_dir / "embeddings.npz"
+    if not embeddings_path.exists():
+        _exit_with_prereq(
+            message=(
+                "cluster-review requires persisted label embeddings at "
+                f"{embeddings_path}."
+            ),
+            run_first="soil-shazam-data-collector label",
+        )
+
+    sample_path = eval_dir / "sample.json"
+    metrics_path = eval_dir / "metrics.json"
+    if not sample_path.exists():
+        _exit_with_prereq(
+            message=f"cluster-review requires evaluation sample at {sample_path}.",
+            run_first="soil-shazam-data-collector eval-sample",
+        )
+    if not metrics_path.exists():
+        _exit_with_prereq(
+            message=f"cluster-review requires evaluation metrics at {metrics_path}.",
+            run_first="soil-shazam-data-collector eval-report",
+        )
 
     from clustering import run_cluster_review
 
     summary = run_cluster_review(
         labeled_dir=labeled_dir,
-        dataset_dir=dataset_dir,
+        eval_dir=eval_dir,
         output_root=clustering_root,
-        clip_model=clip_model,
-        clip_cfg=clip_cfg,
         cluster_cfg=clustering_cfg,
         max_images=max_images,
-        force_recompute_embeddings=force_recompute_embeddings,
     )
 
     counts = summary.get("counts", {})
@@ -562,15 +703,6 @@ def cluster_review(
     typer.echo(f"review_queue:   {artifacts.get('review_queue')}")
     typer.echo(f"suggestions:    {artifacts.get('suggestions')}")
     typer.echo(f"summary:        {artifacts.get('summary')}")
-
-
-def _fmt_pct(value) -> str:
-    if value is None:
-        return "—"
-    return f"{value * 100:.1f}%"
-
-
-# ─── VALIDATE (web UI) ──────────────────────────────────────────────────────
 
 
 @app.command()

@@ -11,6 +11,10 @@ All notable changes to this project will be documented in this file.
 - Added clustering defaults to `config/pipeline.yaml`.
 - Added test coverage for auto-k selection, conservative gating behavior, and annotation seed mapping integration.
 - Added persisted embedding export from the `label` step (`data/labeled/embeddings.npz`) for downstream reuse.
+- Added cluster integration in the web app via a dedicated `/cluster` page and dashboard/topbar navigation.
+- Added CLI flow gating with explicit prerequisite messages and a recommended flow hint:
+  `download -> resize -> deduplicate -> filter -> label -> eval -> cluster`.
+- Added a dashboard "Run Health / Precheck" panel and `/api/precheck` endpoint that show missing prerequisite files and the next command to run.
 
 ### Fixed
 - Resolved package/runtime import issues by replacing fragile parent-relative imports in pipeline modules with stable absolute imports.
@@ -27,6 +31,9 @@ All notable changes to this project will be documented in this file.
 - Fixed Pylance/type warnings in downloader retry helpers and web API dict typing.
 - Fixed PIL resampling typing warning by using `Image.Resampling.LANCZOS`.
 - Fixed `utils.__all__` unsupported entries warning while preserving lazy-loading behavior.
+- Fixed cluster step to be label-embedding-only in v1 (no CLIP extraction or recompute path).
+- Fixed evaluation dependency chain so eval steps require label outputs (not export artifacts).
+- Fixed skip-path filename collisions (e.g., repeated `Image_1.jpg`) by canonicalizing nested-input filenames.
 
 ## [0.1.0] - 2026-03-17
 

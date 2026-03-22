@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}Cluster Review - Soil Pipeline{% endblock %}
+
+{% block content %}
+<div class="step-header">
+  <div>
+    <h1>Cluster Review</h1>
+    <p class="subtitle">Cluster-assisted review queues generated from label + evaluation outputs.</p>
+  </div>
+  <a href="/" class="btn btn-secondary">&larr; Dashboard</a>
+</div>
+
+{% if not summary %}
+<div class="annotate-state">
+  <h2>No clustering run found</h2>
+  <p>
+    Run <code>soil-shazam-data-collector cluster-review</code> after evaluation is complete.
+  </p>
+  <p class="subtitle">Required flow: label -> eval-sample -> annotate -> eval-report -> cluster-review</p>
+</div>
+{% else %}
+<div class="eval-summary-cards">
+  <div class="eval-metric-card">
+    <div class="eval-metric-label">Accepted Images</div>
+    <div class="eval-metric-value">{{ "{:,}".format(stats.count) }}</div>
+    <div class="eval-metric-detail">Run {{ summary.run_id }}</div>
+  </div>
+  <div class="eval-metric-card">
+    <div class="eval-metric-label">Clusters</div>
+    <div class="eval-metric-value">{{ "{:,}".format(stats.clusters) }}</div>
+    <div class="eval-metric-detail">Auto-selected K</div>
+  </div>
+  <div class="eval-metric-card">
+    <div class="eval-metric-label">Review Queue</div>
+    <div class="eval-metric-value">{{ "{:,}".format(stats.review_queue_count) }}</div>
+    <div class="eval-metric-detail">Prioritized for manual review</div>
+  </div>
+  <div class="eval-metric-card">
+    <div class="eval-metric-label">Suggestions</div>
+    <div class="eval-metric-value">{{ "{:,}".format(stats.suggestion_count) }}</div>
+    <div class="eval-metric-detail">{{ "{:,}".format(stats.suggested_slots) }} category slots</div>
+  </div>
+</div>
+
+<section class="eval-section">
+  <div class="section-head">
+    <h2>Run Artifacts</h2>
+    <p class="subtitle">Latest run directory: <code>{{ run_dir }}</code></p>
+  </div>
+  <div class="active-filters">
+    {% if stats.concentration_factor is not none %}
+    <span class="filter-chip"><span>Top-slice concentration: {{ "%.2f"|format(stats.concentration_factor) }}x</span></span>
+    {% endif %}
+    {% for cat in stats.review_only_categories %}
+    <span class="filter-chip"><span>Review-only: {{ cat }}</span></span>
+    {% endfor %}
+  </div>
+</section>
+
+{% if flagged_distribution %}
+<section class="eval-section">
+  <div class="section-head">
+    <h2>Flagged Categories</h2>
+    <p class="subtitle">How often each category appears in the review queue.</p>
+  </div>
+  <div class="step-distributions">
+    {% for cat, count in flagged_distribution.items() %}
+    <div class="chip">{{ cat }}: <strong>{{ count }}</strong></div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="eval-section">
+  <div class="section-head">
+    <h2>Top Review Queue Items</h2>
+    <p class="subtitle">Highest-priority images first.</p>
+  </div>
+  <div class="eval-cm-wrap">
+    <table class="eval-pr-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Image</th>
+          <th>Priority</th>
+          <th>Cluster</th>
+          <th>Outlier</th>
+          <th>Flagged Categories</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in top_review %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td title="{{ item.image }}">{{ item.image }}</td>
+          <td>{{ "%.3f"|format(item.priority_score) }}</td>
+          <td>{{ item.cluster_id }}</td>
+          <td>{{ "yes" if item.is_outlier else "no" }}</td>
+          <td>{{ ", ".join(item.flagged_categories) if item.flagged_categories else "-" }}</td>
+        </tr>
+        {% endfor %}
+        {% if not top_review %}
+        <tr><td colspan="6">No review items available.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="eval-section">
+  <div class="section-head">
+    <h2>Largest Clusters</h2>
+    <p class="subtitle">Quick shape of the accepted set.</p>
+  </div>
+  <div class="eval-cm-wrap">
+    <table class="eval-pr-table">
+      <thead>
+        <tr>
+          <th>Cluster</th>
+          <th>Size</th>
+          <th>Seed Coverage</th>
+          <th>Mean Distance</th>
+          <th>P90 Distance</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in top_clusters %}
+        <tr>
+          <td>{{ c.cluster_id }}</td>
+          <td>{{ c.size }}</td>
+          <td>{{ "%.2f"|format(c.seed_coverage * 100) }}%</td>
+          <td>{{ "%.4f"|format(c.mean_distance) }}</td>
+          <td>{{ "%.4f"|format(c.p90_distance) }}</td>
+        </tr>
+        {% endfor %}
+        {% if not top_clusters %}
+        <tr><td colspan="5">No clusters available.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="eval-section">
+  <div class="section-head">
+    <h2>Suggestion Preview</h2>
+    <p class="subtitle">Conservative suggestions only (advisory; no auto-write).</p>
+  </div>
+  <div class="eval-cm-wrap">
+    <table class="eval-pr-table">
+      <thead>
+        <tr>
+          <th>Image</th>
+          <th>Cluster</th>
+          <th>Suggested Categories</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in suggestion_preview %}
+        <tr>
+          <td title="{{ item.image }}">{{ item.image }}</td>
+          <td>{{ item.cluster_id }}</td>
+          <td>{{ ", ".join(item.suggestions.keys()) if item.suggestions else "-" }}</td>
+        </tr>
+        {% endfor %}
+        {% if not suggestion_preview %}
+        <tr><td colspan="3">No suggestions available.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

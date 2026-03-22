@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -78,3 +79,23 @@ def collect_image_paths(directory: Path) -> list[Path]:
     if not directory.exists():
         return []
     return sorted(p for p in directory.rglob("*") if p.is_file() and is_image_file(p))
+
+
+def canonical_image_name(path: Path, root_dir: Path) -> str:
+    """Return a stable filename suitable for flat output directories.
+
+    If `path` is already directly under `root_dir`, the original filename is kept.
+    For nested inputs (for example raw download folders), prepend a short hash of
+    the relative parent folder to avoid collisions like many `Image_1.jpg` files.
+    """
+    try:
+        rel = path.relative_to(root_dir)
+    except ValueError:
+        rel = Path(path.name)
+
+    if str(rel.parent) in {"", "."}:
+        return path.name
+
+    parent_token = str(rel.parent).replace("\\", "/")
+    prefix = hashlib.md5(parent_token.encode("utf-8")).hexdigest()[:8]
+    return f"{prefix}_{path.name}"

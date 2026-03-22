@@ -8,7 +8,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from utils import CLIPModel, collect_image_paths, load_image
+from utils import CLIPModel, canonical_image_name, collect_image_paths, load_image
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def run_overlay_filter(
     """Identify images with watermarks, logos, or text overlays using CLIP.
 
     Compares average similarity to overlay prompts vs clean prompts.
-    Returns set of filenames (stems) that are flagged.
+    Returns set of canonical output filenames that are flagged.
     """
     image_paths = collect_image_paths(input_dir)
     if not image_paths:
@@ -37,6 +37,7 @@ def run_overlay_filter(
     clean_features = clip_model.encode_texts(clean_prompts)
 
     flagged: set[str] = set()
+    name_root = input_dir / "images" if (input_dir / "images").is_dir() else input_dir
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(log_path, "w", newline="", encoding="utf-8") as f:
@@ -65,15 +66,16 @@ def run_overlay_filter(
                 ov_val = ov_s.item()
                 clean_val = clean_s.item()
                 is_flagged = ov_val - clean_val > overlay_margin
+                canonical_name = canonical_image_name(path, name_root)
 
                 writer.writerow([
-                    path.name,
+                    canonical_name,
                     f"{ov_val:.4f}", f"{clean_val:.4f}",
                     is_flagged,
                 ])
 
                 if is_flagged:
-                    flagged.add(path.stem)
+                    flagged.add(canonical_name)
 
     logger.info(f"Overlay filter: {len(flagged)} images flagged (watermark/text)")
     return flagged

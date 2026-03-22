@@ -22,7 +22,7 @@ def create_eval_sample(
     n_rejected: int = 30,
     seed: int = 42,
 ) -> Path:
-    """Randomly sample images from dataset for human annotation.
+    """Randomly sample images from labeled outputs for human annotation.
 
     Samples from:
     - Accepted images (final dataset) → measure label accuracy + filter precision
@@ -36,7 +36,7 @@ def create_eval_sample(
     rng = random.Random(seed)
     samples = []
 
-    # --- Sample from accepted (final dataset) ---
+    # --- Sample from accepted labels ---
     labels_path = dataset_dir / "labels_full.json"
     if not labels_path.exists():
         labels_path = dataset_dir / "labels.json"
@@ -68,9 +68,11 @@ def create_eval_sample(
         })
 
     # --- Sample from rejected images (for filter recall) ---
-    # Rejected images are in the deduped dir but not in the filtered dir
-    deduped_images_dir = dataset_dir.parent / "deduped" / "images"
-    filtered_images_dir = dataset_dir.parent / "filtered"
+    # Rejected images are in deduped but not in filtered.
+    deduped_root = dataset_dir.parent / "deduped"
+    filtered_root = dataset_dir.parent / "filtered"
+    deduped_images_dir = deduped_root / "images" if (deduped_root / "images").is_dir() else deduped_root
+    filtered_images_dir = filtered_root / "images" if (filtered_root / "images").is_dir() else filtered_root
 
     if deduped_images_dir.exists() and filtered_images_dir.exists():
         deduped_stems = {
@@ -117,6 +119,6 @@ def create_eval_sample(
     rejected_count = sum(1 for s in samples if s["source"] == "rejected")
     logger.info(
         f"Evaluation sample created: {len(samples)} images "
-        f"({accepted_count} accepted, {rejected_count} rejected) → {sample_path}"
+        f"({accepted_count} accepted, {rejected_count} rejected) -> {sample_path}"
     )
     return sample_path

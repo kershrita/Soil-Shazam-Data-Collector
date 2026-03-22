@@ -1,5 +1,6 @@
 from .image_utils import (
     IMAGE_EXTENSIONS,
+    canonical_image_name,
     check_resolution,
     collect_image_paths,
     is_image_file,
@@ -11,6 +12,7 @@ from .logging import setup_logging
 
 __all__ = [
     "IMAGE_EXTENSIONS",
+    "canonical_image_name",
     "check_resolution",
     "collect_image_paths",
     "is_image_file",

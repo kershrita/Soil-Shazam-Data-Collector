@@ -15,8 +15,9 @@
     <div class="topbar-steps">
       {% for s in steps|default([]) %}
       {% set _sid = s.id if s.id is defined else s['id'] %}
-      <a href="/step/{{ s.id if s.id is defined else s['id'] }}"
-         class="topbar-step {% if step is defined and step.id == _sid %}active{% endif %}">
+      {% set _url = s.url if s.url is defined else (s['url'] if s['url'] is defined else '/step/' ~ _sid) %}
+      <a href="{{ _url }}"
+         class="topbar-step {% if (step is defined and step.id == _sid) or request.path == _url %}active{% endif %}">
         {{ s.name if s.name is defined else s['name'] }}
       </a>
       {% endfor %}

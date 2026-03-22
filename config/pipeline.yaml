@@ -44,7 +44,6 @@ clustering:
   similarity_min: 0.28           # Minimum seed cosine similarity for suggestion acceptance
   margin_min: 0.03               # Minimum model confidence margin (best - runner-up)
   outlier_quantile_max: 0.90     # Cluster distance quantile above which images are flagged as outliers
-  batch_size: 25                 # Embedding batch size used by cluster-review
 
 # --- Output paths ---
 paths:

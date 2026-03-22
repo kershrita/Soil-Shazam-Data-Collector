@@ -16,8 +16,6 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import calinski_harabasz_score, silhouette_score
 
-from utils import load_image
-
 logger = logging.getLogger(__name__)
 
 LABEL_CATEGORIES = [
@@ -33,13 +31,10 @@ LABEL_CATEGORIES = [
 
 def run_cluster_review(
     labeled_dir: Path,
-    dataset_dir: Path,
+    eval_dir: Path,
     output_root: Path,
-    clip_model,
-    clip_cfg: dict[str, Any],
     cluster_cfg: dict[str, Any] | None = None,
     max_images: int = 0,
-    force_recompute_embeddings: bool = False,
 ) -> dict[str, Any]:
     """Build cluster metadata, conservative suggestions, and a review queue.
 
@@ -55,7 +50,6 @@ def run_cluster_review(
     similarity_min = float(cluster_cfg.get("similarity_min", 0.28))
     margin_min = float(cluster_cfg.get("margin_min", 0.03))
     outlier_quantile_max = float(cluster_cfg.get("outlier_quantile_max", 0.90))
-    batch_size = max(1, int(cluster_cfg.get("batch_size", 25)))
     random_seed = int(cluster_cfg.get("random_seed", 42))
 
     if k_min < 2:
@@ -69,26 +63,15 @@ def run_cluster_review(
 
     labels_hash_before = _labels_hash_snapshot(labeled_dir)
 
-    records, labels_path, image_dir = load_labeled_records(labeled_dir, max_images=max_images)
+    records, labels_path, _image_dir = load_labeled_records(labeled_dir, max_images=max_images)
     logger.info("Cluster review: loaded %s accepted records from %s", len(records), labels_path)
 
     output_root.mkdir(parents=True, exist_ok=True)
-    cache_dir = output_root / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    model_name = str(clip_cfg.get("model_name", "ViT-L-14"))
-    pretrained = str(clip_cfg.get("pretrained", "laion2b_s32b_b82k"))
-
-    records, embeddings = load_or_compute_embeddings(
+    embeddings_path = labeled_dir / "embeddings.npz"
+    embeddings_meta_path = labeled_dir / "embeddings_meta.json"
+    records, embeddings = load_required_embeddings(
         records=records,
-        image_dir=image_dir,
         labeled_dir=labeled_dir,
-        clip_model=clip_model,
-        clip_model_name=model_name,
-        clip_pretrained=pretrained,
-        cache_dir=cache_dir,
-        batch_size=batch_size,
-        force_recompute=force_recompute_embeddings,
     )
 
     if len(records) < 3:
@@ -96,7 +79,6 @@ def run_cluster_review(
 
     image_to_idx = {r["image"]: idx for idx, r in enumerate(records)}
 
-    eval_dir = dataset_dir.parent / "evaluation"
     sample_path = eval_dir / "sample.json"
     metrics_path = eval_dir / "metrics.json"
 
@@ -379,12 +361,14 @@ def run_cluster_review(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "inputs": {
             "labeled_dir": str(labeled_dir),
-            "dataset_dir": str(dataset_dir),
+            "eval_dir": str(eval_dir),
             "labels_path": str(labels_path),
             "evaluation_sample": str(sample_path),
             "evaluation_metrics": str(metrics_path),
-            "model_name": model_name,
-            "pretrained": pretrained,
+            "embeddings_path": str(embeddings_path),
+            "embeddings_meta_path": str(embeddings_meta_path),
+            "embedding_model_name": _read_embedding_meta_field(embeddings_meta_path, "model_name"),
+            "embedding_pretrained": _read_embedding_meta_field(embeddings_meta_path, "pretrained"),
         },
         "settings": {
             "k_min": k_min,
@@ -396,7 +380,6 @@ def run_cluster_review(
             "similarity_min": similarity_min,
             "margin_min": margin_min,
             "outlier_quantile_max": outlier_quantile_max,
-            "batch_size": batch_size,
             "random_seed": random_seed,
         },
         "counts": {
@@ -501,163 +484,63 @@ def extract_margin(entry: dict[str, Any], category: str) -> float | None:
     return float(conf - runner)
 
 
-def load_or_compute_embeddings(
+def load_required_embeddings(
     records: list[dict[str, Any]],
-    image_dir: Path,
     labeled_dir: Path,
-    clip_model,
-    clip_model_name: str,
-    clip_pretrained: str,
-    cache_dir: Path,
-    batch_size: int,
-    force_recompute: bool,
 ) -> tuple[list[dict[str, Any]], np.ndarray]:
-    """Load cached embeddings or compute and cache embeddings for accepted images."""
-    persisted_npz = labeled_dir / "embeddings.npz"
-    if not force_recompute and persisted_npz.exists():
-        try:
-            cached = np.load(persisted_npz)
-            persisted_images = [str(x) for x in cached["images"].tolist()]
-            persisted_embeddings = np.asarray(cached["embeddings"], dtype=np.float32)
-            if (
-                persisted_embeddings.ndim == 2
-                and len(persisted_images) == persisted_embeddings.shape[0]
-            ):
-                persisted_map = {
-                    name: persisted_embeddings[idx]
-                    for idx, name in enumerate(persisted_images)
-                }
-                expected_images = [r["image"] for r in records]
-                hit_count = sum(1 for name in expected_images if name in persisted_map)
-                if hit_count == len(expected_images):
-                    embeddings = np.vstack([persisted_map[name] for name in expected_images]).astype(np.float32)
-                    logger.info(
-                        "Cluster review: loaded %s persisted label embeddings from %s",
-                        len(records),
-                        persisted_npz,
-                    )
-                    return records, embeddings
-                logger.info(
-                    "Cluster review: found %s/%s persisted embeddings, computing missing features",
-                    hit_count,
-                    len(expected_images),
-                )
-        except (OSError, ValueError, KeyError) as err:
-            logger.warning("Ignoring invalid persisted label embeddings: %s", err)
+    """Load persisted embeddings from the label step.
 
-    cache_npz = cache_dir / "accepted_embeddings.npz"
-    cache_meta = cache_dir / "accepted_embeddings_meta.json"
-
-    fingerprint = build_records_fingerprint(
-        records=records,
-        image_dir=image_dir,
-        clip_model_name=clip_model_name,
-        clip_pretrained=clip_pretrained,
-        batch_size=batch_size,
-    )
-
-    cache_ok = False
-    if not force_recompute and cache_npz.exists() and cache_meta.exists():
-        try:
-            meta = json.loads(cache_meta.read_text(encoding="utf-8"))
-            if meta.get("fingerprint") == fingerprint:
-                cached = np.load(cache_npz)
-                cached_images = [str(x) for x in cached["images"].tolist()]
-                expected_images = [r["image"] for r in records]
-                if cached_images == expected_images:
-                    embeddings = np.asarray(cached["embeddings"], dtype=np.float32)
-                    if embeddings.ndim == 2 and embeddings.shape[0] == len(records):
-                        cache_ok = True
-                        logger.info("Cluster review: loaded %s cached embeddings", len(records))
-                        return records, embeddings
-        except (OSError, ValueError, KeyError, json.JSONDecodeError) as err:
-            logger.warning("Ignoring invalid embedding cache: %s", err)
-
-    if not cache_ok:
-        logger.info("Cluster review: computing CLIP embeddings for %s images", len(records))
-
-    kept_records: list[dict[str, Any]] = []
-    all_features: list[np.ndarray] = []
-
-    for start in range(0, len(records), batch_size):
-        batch_records = records[start: start + batch_size]
-        images = []
-        kept_batch: list[dict[str, Any]] = []
-
-        for rec in batch_records:
-            img = load_image(image_dir / rec["image"])
-            if img is None:
-                continue
-            images.append(img)
-            kept_batch.append(rec)
-
-        if not images:
-            continue
-
-        batch_emb = clip_model.encode_images(images)
-        batch_arr = np.asarray(batch_emb, dtype=np.float32)
-        if batch_arr.ndim != 2:
-            raise ValueError("CLIP embeddings must be a 2D array")
-
-        all_features.append(batch_arr)
-        kept_records.extend(kept_batch)
-
-    if not kept_records:
-        raise ValueError("Unable to compute embeddings: no readable images in accepted set")
-
-    embeddings = np.vstack(all_features).astype(np.float32)
-
-    cache_payload_images = np.array([r["image"] for r in kept_records], dtype=np.str_)
-    np.savez_compressed(cache_npz, images=cache_payload_images, embeddings=embeddings)
-    cache_meta.write_text(
-        json.dumps(
-            {
-                "fingerprint": build_records_fingerprint(
-                    records=kept_records,
-                    image_dir=image_dir,
-                    clip_model_name=clip_model_name,
-                    clip_pretrained=clip_pretrained,
-                    batch_size=batch_size,
-                ),
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "count": len(kept_records),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    if len(kept_records) != len(records):
-        logger.warning(
-            "Cluster review: skipped %s unreadable images while computing embeddings",
-            len(records) - len(kept_records),
+    Cluster review in v1 is strictly read-only and must reuse label embeddings.
+    """
+    embeddings_path = labeled_dir / "embeddings.npz"
+    if not embeddings_path.exists():
+        raise ValueError(
+            f"Missing {embeddings_path}. Run the label step first to generate embeddings."
         )
 
-    return kept_records, embeddings
+    try:
+        cached = np.load(embeddings_path)
+        cached_images = [str(x) for x in cached["images"].tolist()]
+        cached_embeddings = np.asarray(cached["embeddings"], dtype=np.float32)
+    except (OSError, ValueError, KeyError) as err:
+        raise ValueError(
+            f"Invalid embeddings cache at {embeddings_path}: {err}. Run label again."
+        ) from err
+
+    if cached_embeddings.ndim != 2 or len(cached_images) != cached_embeddings.shape[0]:
+        raise ValueError(
+            f"Invalid embedding shape in {embeddings_path}. Run label again to regenerate embeddings."
+        )
+
+    embedding_map = {name: cached_embeddings[idx] for idx, name in enumerate(cached_images)}
+    expected_images = [record["image"] for record in records]
+    missing = [name for name in expected_images if name not in embedding_map]
+    if missing:
+        raise ValueError(
+            "Label embeddings are incomplete for the current accepted set "
+            f"(missing {len(missing)} images). Run label again before cluster-review."
+        )
+
+    ordered = np.vstack([embedding_map[name] for name in expected_images]).astype(np.float32)
+    logger.info(
+        "Cluster review: loaded %s persisted label embeddings from %s",
+        len(records),
+        embeddings_path,
+    )
+    return records, ordered
 
 
-def build_records_fingerprint(
-    records: list[dict[str, Any]],
-    image_dir: Path,
-    clip_model_name: str,
-    clip_pretrained: str,
-    batch_size: int,
-) -> str:
-    """Build a stable fingerprint to validate embedding cache reuse."""
-    digest = hashlib.sha256()
-    digest.update(f"model={clip_model_name}|pretrained={clip_pretrained}|batch={batch_size}".encode("utf-8"))
-
-    for rec in records:
-        image = rec["image"]
-        path = image_dir / image
-        try:
-            stat = path.stat()
-            token = f"{image}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8")
-        except OSError:
-            token = f"{image}|missing".encode("utf-8")
-        digest.update(token)
-
-    return digest.hexdigest()
+def _read_embedding_meta_field(meta_path: Path, key: str) -> str | None:
+    if not meta_path.exists():
+        return None
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    value = payload.get(key)
+    if value is None:
+        return None
+    return str(value)
 
 
 def collect_annotation_seeds(

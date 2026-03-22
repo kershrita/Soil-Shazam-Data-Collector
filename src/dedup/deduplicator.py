@@ -10,7 +10,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from utils import collect_image_paths
+from utils import canonical_image_name, collect_image_paths
 
 logger = logging.getLogger(__name__)
 
@@ -50,19 +50,23 @@ def _find_duplicates_single_process(
 
 def _phash_dedup(
     image_dir: Path, threshold: int = 10, num_workers: int = 8,
-) -> tuple[set[str], dict[str, list[str]]]:
+) -> tuple[set[str], dict[str, list[str]], dict[str, Path]]:
     """Stage 1: Find duplicates via perceptual hashing (imagededup).
 
     Uses ThreadPoolExecutor for reliable parallel hashing on Windows
     (imagededup's built-in multiprocessing can deadlock).
 
-    Returns (set of filenames to REMOVE, dict mapping kept→[removed]).
+    Returns:
+        (set of filenames to remove, dict mapping kept→[removed], canonical name→source path)
     """
     from imagededup.methods import PHash
 
     logger.info(f"Stage 1 — Perceptual hashing (threshold={threshold}, workers={num_workers})")
     hasher = PHash()
     image_files = collect_image_paths(image_dir)
+    canonical_to_path: dict[str, Path] = {
+        canonical_image_name(path, image_dir): path for path in image_files
+    }
 
     # Hash images in parallel using threads (avoids Windows multiprocessing deadlocks)
     encodings: dict[str, str] = {}
@@ -71,10 +75,10 @@ def _phash_dedup(
     def _hash_one(path: Path) -> tuple[str, str | None]:
         try:
             h = hasher.encode_image(image_file=str(path))
-            return path.name, h
+            return canonical_image_name(path, image_dir), h
         except Exception as e:
-            logger.debug(f"Failed to hash {path.name}: {e}")
-            return path.name, None
+            logger.debug(f"Failed to hash {path}: {e}")
+            return canonical_image_name(path, image_dir), None
 
     with ThreadPoolExecutor(max_workers=num_workers) as pool:
         results = list(tqdm(
@@ -116,7 +120,7 @@ def _phash_dedup(
             groups[filename] = removed_in_group
 
     logger.info(f"Stage 1: {len(to_remove)} duplicates found via PHash")
-    return to_remove, groups
+    return to_remove, groups, canonical_to_path
 
 
 def run_deduplication(
@@ -144,11 +148,11 @@ def run_deduplication(
         (output_dir / "dedup_groups.json").write_text("{}", encoding="utf-8")
         return stats
 
-    phash_remove, phash_groups = _phash_dedup(images_dir, phash_threshold, num_workers)
+    phash_remove, phash_groups, canonical_to_path = _phash_dedup(images_dir, phash_threshold, num_workers)
     stats["removed"] = len(phash_remove)
 
-    surviving = [p for p in image_paths if p.name not in phash_remove]
-    stats["kept"] = len(surviving)
+    surviving_names = sorted(name for name in canonical_to_path.keys() if name not in phash_remove)
+    stats["kept"] = len(surviving_names)
 
     # Save group mappings
     groups_path = output_dir / "dedup_groups.json"
@@ -159,21 +163,22 @@ def run_deduplication(
     logger.info(f"Saved duplicate group mapping to {groups_path}")
 
     # Synchronize output directory with current surviving set
-    surviving_names = {p.name for p in surviving}
+    surviving_names_set = set(surviving_names)
     for existing in collect_image_paths(out_images_dir):
-        if existing.name not in surviving_names:
+        if existing.name not in surviving_names_set:
             existing.unlink(missing_ok=True)
 
     # Copy surviving images — parallel I/O
 
     copy_workers = min(num_workers, 16)
 
-    def _copy(p: Path) -> None:
-        dest = out_images_dir / p.name
-        shutil.copy2(p, dest)
+    def _copy(name: str) -> None:
+        src = canonical_to_path[name]
+        dest = out_images_dir / name
+        shutil.copy2(src, dest)
 
     with ThreadPoolExecutor(max_workers=copy_workers) as pool:
-        list(tqdm(pool.map(_copy, surviving), total=len(surviving), desc="Copying deduplicated images"))
+        list(tqdm(pool.map(_copy, surviving_names), total=len(surviving_names), desc="Copying deduplicated images"))
 
     logger.info(
         f"Dedup done: {stats['kept']} kept, {stats['removed']} removed (PHash)"

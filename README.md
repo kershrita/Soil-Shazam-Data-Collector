@@ -17,10 +17,10 @@ Build a high-quality, evaluation-ready soil image dataset from web sources with 
 3. `dedup` perceptual duplicates
 4. `filter` overlays/watermarks and non-soil images
 5. `label` images across 7 soil categories
-6. `annotate` in web UI for evaluation ground truth
+6. `eval-sample` + `annotate` in web UI for evaluation ground truth
 7. `eval-report` to compute metrics
 8. `cluster-review` to build cluster-assisted review queues
-9. `export` final dataset files
+9. `export` final dataset files (optional)
 
 ## Label Categories
 
@@ -46,10 +46,12 @@ pip install -e .
 soil-shazam-data-collector --help
 ```
 
-### 3) Run Full Pipeline
+### 3) Run Full Pipeline To Labels
 
 ```bash
 soil-shazam-data-collector run-all --limit 500
+# Optional skips:
+# soil-shazam-data-collector run-all --skip-resize --skip-dedup --skip-filter
 ```
 
 ### 4) Launch Web App
@@ -58,7 +60,8 @@ soil-shazam-data-collector run-all --limit 500
 soil-shazam-data-collector webapp
 ```
 
-Open `/` for dashboard and `/annotate` for evaluation review.
+Open `/` for dashboard, `/annotate` for evaluation review, and `/cluster` for clustering outputs.
+The dashboard now includes a **Run Health / Precheck** panel that shows missing prerequisites and which command to run next.
 
 ## Step-by-Step Commands
 
@@ -68,9 +71,20 @@ soil-shazam-data-collector resize
 soil-shazam-data-collector dedup
 soil-shazam-data-collector filter
 soil-shazam-data-collector label
+soil-shazam-data-collector eval-sample
+soil-shazam-data-collector eval-report
 soil-shazam-data-collector cluster-review
-soil-shazam-data-collector export
 ```
+
+Recommended production flow:
+
+`download -> resize -> deduplicate -> filter -> label -> eval -> cluster`
+
+Step dependency behavior:
+
+- `resize`, `dedup`, `filter`, and `label` all require available images (with automatic fallback to the best available upstream image output).
+- `eval-sample` and `eval-report` require `label`.
+- `cluster-review` requires `eval-report` outputs and `data/labeled/embeddings.npz`.
 
 ## Evaluation Flow
 
@@ -111,8 +125,11 @@ Generated outputs (under `data/clustering/<run_id>/`):
 - `suggestions.json`
 - `summary.json`
 
-Label step now also persists reusable CLIP features in `data/labeled/embeddings.npz`
-so `cluster-review` can reuse them instead of re-encoding images.
+`cluster-review` is read-only in v1 and does not extract CLIP embeddings.
+It reuses persisted label embeddings from:
+
+- `data/labeled/embeddings.npz`
+- `data/labeled/embeddings_meta.json`
 
 ## Configuration
 

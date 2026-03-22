@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 from PIL import Image
+from utils import collect_image_paths
 
 # ─── Project paths ────────────────────────────────────────────────────────────
 
@@ -22,6 +23,7 @@ STEPS = [
     {"id": "dedup",    "name": "Dedup",    "desc": "Perceptual hash deduplication",  "path_key": "deduped",  "has_labels": False, "icon": "3"},
     {"id": "filter",   "name": "Filter",   "desc": "Overlay + soil CLIP filter",    "path_key": "filtered", "has_labels": False, "icon": "4"},
     {"id": "label",    "name": "Label",    "desc": "CLIP multi-category labeling",  "path_key": "labeled",  "has_labels": True,  "icon": "5"},
+    {"id": "cluster",  "name": "Cluster",  "desc": "Risk-ranked review queues",     "path_key": None,       "has_labels": False, "icon": "6", "url": "/cluster"},
 ]
 
 LABEL_CATEGORIES = [
@@ -78,6 +80,10 @@ def get_step(step_id: str) -> dict | None:
 
 def step_base_dir(step_id: str, cfg: dict) -> Path:
     step = get_step(step_id)
+    if not step:
+        raise ValueError(f"Unknown step id: {step_id}")
+    if not step.get("path_key"):
+        raise ValueError(f"Step {step_id} does not map to an image directory")
     return resolve(cfg["paths"][step["path_key"]])
 
 
@@ -94,7 +100,10 @@ def list_images(step_id: str, cfg: dict) -> list[str]:
     if cached is not None:
         return cached
 
-    img_dir = images_dir(step_id, cfg)
+    try:
+        img_dir = images_dir(step_id, cfg)
+    except ValueError:
+        return []
     if not img_dir.exists():
         return []
 
@@ -121,7 +130,10 @@ def load_labels(step_id: str, cfg: dict) -> dict[str, dict]:
     if cached is not None:
         return cached
 
-    base = step_base_dir(step_id, cfg)
+    try:
+        base = step_base_dir(step_id, cfg)
+    except ValueError:
+        return {}
     labels_path = base / "labels.json"
     if not labels_path.exists():
         return {}
@@ -138,7 +150,10 @@ def load_full_labels(step_id: str, cfg: dict) -> dict[str, dict]:
     if cached is not None:
         return cached
 
-    base = step_base_dir(step_id, cfg)
+    try:
+        base = step_base_dir(step_id, cfg)
+    except ValueError:
+        return {}
     path = base / "labels_full.json"
     if not path.exists():
         return {}
@@ -200,6 +215,256 @@ def find_raw_original(resized_name: str, hash_map: dict, cfg: dict) -> Path | No
         if candidate.exists():
             return candidate
     return None
+
+
+def clustering_root(cfg: dict) -> Path:
+    return resolve(cfg["paths"]["dataset"]).parent / "clustering"
+
+
+def latest_cluster_run(cfg: dict) -> Path | None:
+    root = clustering_root(cfg)
+    if not root.exists():
+        return None
+    runs = [p for p in root.iterdir() if p.is_dir() and p.name != "cache"]
+    if not runs:
+        return None
+    runs.sort(key=lambda p: p.name, reverse=True)
+    return runs[0]
+
+
+def load_json_file(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, TypeError):
+        return default
+
+
+def build_pipeline_precheck(cfg: dict) -> list[dict]:
+    """Compute readiness and missing prerequisites for each pipeline command."""
+    raw_dir = resolve(cfg["paths"]["raw"])
+    resized_dir = resolve(cfg["paths"]["resized"])
+    deduped_dir = resolve(cfg["paths"]["deduped"])
+    filtered_dir = resolve(cfg["paths"]["filtered"])
+    labeled_dir = resolve(cfg["paths"]["labeled"])
+    eval_dir = labeled_dir.parent / "evaluation"
+
+    labels_full = labeled_dir / "labels_full.json"
+    labels_basic = labeled_dir / "labels.json"
+    labels_path = labels_full if labels_full.exists() else labels_basic
+    embeddings_path = labeled_dir / "embeddings.npz"
+    eval_sample_path = eval_dir / "sample.json"
+    eval_metrics_path = eval_dir / "metrics.json"
+
+    counts = {
+        "raw": len(collect_image_paths(raw_dir)) if raw_dir.exists() else 0,
+        "resized": len(collect_image_paths(resized_dir)) if resized_dir.exists() else 0,
+        "deduped": len(collect_image_paths(deduped_dir)) if deduped_dir.exists() else 0,
+        "filtered": len(collect_image_paths(filtered_dir)) if filtered_dir.exists() else 0,
+    }
+
+    def first_source(candidates: list[tuple[str, str]]) -> tuple[str, int] | None:
+        for key, label in candidates:
+            count = counts.get(key, 0)
+            if count > 0:
+                return label, count
+        return None
+
+    precheck: list[dict] = [
+        {
+            "id": "download",
+            "title": "download",
+            "ready": True,
+            "details": "Always ready. This is the root step.",
+            "run_first": None,
+            "missing": [],
+        }
+    ]
+
+    if counts["raw"] > 0:
+        precheck.append(
+            {
+                "id": "resize",
+                "title": "resize",
+                "ready": True,
+                "details": f"Ready using raw images ({counts['raw']:,}).",
+                "run_first": None,
+                "missing": [],
+            }
+        )
+    else:
+        precheck.append(
+            {
+                "id": "resize",
+                "title": "resize",
+                "ready": False,
+                "details": "Blocked: no downloaded images found.",
+                "run_first": "soil-shazam-data-collector download",
+                "missing": [{"reason": "Missing raw images", "path": str(raw_dir)}],
+            }
+        )
+
+    dedup_source = first_source([("resized", "resized"), ("raw", "raw")])
+    if dedup_source:
+        source_label, count = dedup_source
+        precheck.append(
+            {
+                "id": "dedup",
+                "title": "dedup",
+                "ready": True,
+                "details": f"Ready using {source_label} images ({count:,}).",
+                "run_first": None,
+                "missing": [],
+            }
+        )
+    else:
+        precheck.append(
+            {
+                "id": "dedup",
+                "title": "dedup",
+                "ready": False,
+                "details": "Blocked: no images available for dedup.",
+                "run_first": "soil-shazam-data-collector download",
+                "missing": [
+                    {"reason": "No resized images", "path": str(resized_dir)},
+                    {"reason": "No raw images", "path": str(raw_dir)},
+                ],
+            }
+        )
+
+    filter_source = first_source([("deduped", "deduped"), ("resized", "resized"), ("raw", "raw")])
+    if filter_source:
+        source_label, count = filter_source
+        precheck.append(
+            {
+                "id": "filter",
+                "title": "filter",
+                "ready": True,
+                "details": f"Ready using {source_label} images ({count:,}).",
+                "run_first": None,
+                "missing": [],
+            }
+        )
+    else:
+        precheck.append(
+            {
+                "id": "filter",
+                "title": "filter",
+                "ready": False,
+                "details": "Blocked: no images available for filter.",
+                "run_first": "soil-shazam-data-collector download",
+                "missing": [
+                    {"reason": "No deduped images", "path": str(deduped_dir)},
+                    {"reason": "No resized images", "path": str(resized_dir)},
+                    {"reason": "No raw images", "path": str(raw_dir)},
+                ],
+            }
+        )
+
+    label_source = first_source(
+        [("filtered", "filtered"), ("deduped", "deduped"), ("resized", "resized"), ("raw", "raw")]
+    )
+    if label_source:
+        source_label, count = label_source
+        precheck.append(
+            {
+                "id": "label",
+                "title": "label",
+                "ready": True,
+                "details": f"Ready using {source_label} images ({count:,}).",
+                "run_first": None,
+                "missing": [],
+            }
+        )
+    else:
+        precheck.append(
+            {
+                "id": "label",
+                "title": "label",
+                "ready": False,
+                "details": "Blocked: no images available for label.",
+                "run_first": "soil-shazam-data-collector download",
+                "missing": [
+                    {"reason": "No filtered images", "path": str(filtered_dir)},
+                    {"reason": "No deduped images", "path": str(deduped_dir)},
+                    {"reason": "No resized images", "path": str(resized_dir)},
+                    {"reason": "No raw images", "path": str(raw_dir)},
+                ],
+            }
+        )
+
+    has_labels = labels_path.exists()
+    precheck.append(
+        {
+            "id": "eval-sample",
+            "title": "eval-sample",
+            "ready": has_labels,
+            "details": (
+                f"Ready using labels file: {labels_path.name}."
+                if has_labels
+                else "Blocked: missing label outputs."
+            ),
+            "run_first": None if has_labels else "soil-shazam-data-collector label",
+            "missing": [] if has_labels else [{"reason": "Missing labels", "path": str(labeled_dir)}],
+        }
+    )
+
+    eval_report_missing = []
+    if not has_labels:
+        eval_report_missing.append({"reason": "Missing labels", "path": str(labeled_dir)})
+    if not eval_sample_path.exists():
+        eval_report_missing.append({"reason": "Missing evaluation sample", "path": str(eval_sample_path)})
+
+    precheck.append(
+        {
+            "id": "eval-report",
+            "title": "eval-report",
+            "ready": len(eval_report_missing) == 0,
+            "details": (
+                "Ready. Evaluation sample found."
+                if len(eval_report_missing) == 0
+                else "Blocked: eval prerequisites are incomplete."
+            ),
+            "run_first": None if len(eval_report_missing) == 0 else "soil-shazam-data-collector eval-sample",
+            "missing": eval_report_missing,
+        }
+    )
+
+    cluster_missing = []
+    if not has_labels:
+        cluster_missing.append({"reason": "Missing labels", "path": str(labeled_dir)})
+    if not embeddings_path.exists():
+        cluster_missing.append({"reason": "Missing label embeddings", "path": str(embeddings_path)})
+    if not eval_sample_path.exists():
+        cluster_missing.append({"reason": "Missing evaluation sample", "path": str(eval_sample_path)})
+    if not eval_metrics_path.exists():
+        cluster_missing.append({"reason": "Missing evaluation metrics", "path": str(eval_metrics_path)})
+
+    cluster_run_first = None
+    if not has_labels or not embeddings_path.exists():
+        cluster_run_first = "soil-shazam-data-collector label"
+    elif not eval_sample_path.exists():
+        cluster_run_first = "soil-shazam-data-collector eval-sample"
+    elif not eval_metrics_path.exists():
+        cluster_run_first = "soil-shazam-data-collector eval-report"
+
+    precheck.append(
+        {
+            "id": "cluster-review",
+            "title": "cluster-review",
+            "ready": len(cluster_missing) == 0,
+            "details": (
+                "Ready. All cluster prerequisites are available."
+                if len(cluster_missing) == 0
+                else "Blocked: cluster prerequisites are incomplete."
+            ),
+            "run_first": cluster_run_first,
+            "missing": cluster_missing,
+        }
+    )
+
+    return precheck
 
 
 def load_filter_log(cfg: dict, log_name: str) -> list[dict]:

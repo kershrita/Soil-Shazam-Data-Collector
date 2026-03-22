@@ -8,7 +8,8 @@
   'download': 'Images per source',
   'filter':   'Kept vs. rejected — stacked by source',
   'dedup':    'Kept vs. removed duplicates — stacked by source',
-  'label':    'Label distribution across 7 categories'
+  'label':    'Label distribution across 7 categories',
+  'cluster':  'Flagged review signals by category'
 } %}
 
 {% block content %}
@@ -16,12 +17,47 @@
 <p class="subtitle">Click any step to browse images and validate results.</p>
 <div class="dashboard-actions">
   <a href="/annotate" class="btn btn-primary">Open Evaluation Workspace</a>
+  <a href="/cluster" class="btn">Open Cluster Review</a>
 </div>
+
+{% if precheck %}
+<section class="precheck-section">
+  <div class="section-head">
+    <h2>Run Health / Precheck</h2>
+    <p class="subtitle">Readiness and missing prerequisites for each command.</p>
+  </div>
+  <div class="precheck-grid">
+    {% for c in precheck %}
+    <div class="precheck-card {{ 'ready' if c.ready else 'blocked' }}">
+      <div class="precheck-head">
+        <h3>{{ c.title }}</h3>
+        <span class="precheck-status {{ 'ready' if c.ready else 'blocked' }}">
+          {{ 'Ready' if c.ready else 'Blocked' }}
+        </span>
+      </div>
+      <p class="precheck-details">{{ c.details }}</p>
+      {% if c.missing %}
+      <div class="precheck-missing">
+        {% for m in c.missing %}
+        <div class="precheck-missing-item">
+          <strong>{{ m.reason }}:</strong> <code>{{ m.path }}</code>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if c.run_first %}
+      <div class="precheck-runfirst">Run first: <code>{{ c.run_first }}</code></div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
 <!-- Pipeline flow -->
 <div class="pipeline-flow">
   {% for s in steps %}
-  <a href="/step/{{ s.id }}" class="step-card {{ 'has-data' if s.stats.count > 0 else 'empty' }}">
+  <a href="{{ s.url if s.url is defined else '/step/' ~ s.id }}" class="step-card {{ 'has-data' if s.stats.count > 0 else 'empty' }}">
     <div class="step-num">{{ s.icon }}</div>
     <div class="step-name">{{ s.name }}</div>
     <div class="step-count">{{ "{:,}".format(s.stats.count) }}</div>
@@ -91,7 +127,7 @@
       </div>
       {% endif %}
     </div>
-    <a href="/step/{{ s.id }}" class="stats-card-link">Browse &rarr;</a>
+    <a href="{{ s.url if s.url is defined else '/step/' ~ s.id }}" class="stats-card-link">Browse &rarr;</a>
   </div>
   {% endfor %}
 </div>

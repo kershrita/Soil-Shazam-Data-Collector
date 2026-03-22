@@ -9,8 +9,10 @@ from .helpers import (
     build_soil_score_map,
     cache,
     extract_source,
+    latest_cluster_run,
     list_dedup_removed_images,
     list_images,
+    load_json_file,
     load_filter_log,
     load_labels,
 )
@@ -29,7 +31,65 @@ def compute_step_stats(step_id: str, cfg: dict) -> dict:
     stats: dict = {"count": len(images)}
     step = get_step(step_id)
 
-    if step_id == "download":
+    if step_id == "cluster":
+        run_dir = latest_cluster_run(cfg)
+        if not run_dir:
+            stats.update(
+                {
+                    "has_run": False,
+                    "clusters": 0,
+                    "review_queue_count": 0,
+                    "suggestion_count": 0,
+                    "suggested_slots": 0,
+                }
+            )
+            cache.set(cache_key, stats)
+            return stats
+
+        summary = load_json_file(run_dir / "summary.json", {})
+        review = load_json_file(run_dir / "review_queue.json", {})
+        suggestions = load_json_file(run_dir / "suggestions.json", {})
+        clusters_payload = load_json_file(run_dir / "clusters.json", {})
+
+        counts = summary.get("counts", {}) if isinstance(summary, dict) else {}
+        quality = summary.get("quality_controls", {}) if isinstance(summary, dict) else {}
+
+        review_items = review.get("items", []) if isinstance(review, dict) else []
+        suggestion_items = suggestions.get("items", []) if isinstance(suggestions, dict) else []
+        clusters_list = clusters_payload.get("clusters", []) if isinstance(clusters_payload, dict) else []
+
+        stats.update(
+            {
+                "has_run": True,
+                "run_id": summary.get("run_id", run_dir.name) if isinstance(summary, dict) else run_dir.name,
+                "generated_at": summary.get("generated_at") if isinstance(summary, dict) else None,
+                "count": int(counts.get("accepted_images", len(review_items))),
+                "clusters": int(counts.get("clusters", len(clusters_list))),
+                "review_queue_count": int(counts.get("review_queue_items", len(review_items))),
+                "suggestion_count": int(counts.get("suggestion_items", len(suggestion_items))),
+                "suggested_slots": int(
+                    counts.get(
+                        "suggested_category_slots",
+                        sum(len(item.get("suggestions", {})) for item in suggestion_items),
+                    )
+                ),
+                "review_only_categories": quality.get("review_only_categories", []) if isinstance(quality, dict) else [],
+                "concentration_factor": (
+                    (quality.get("priority_concentration") or {}).get("concentration_factor")
+                    if isinstance(quality, dict)
+                    else None
+                ),
+            }
+        )
+
+        flagged_dist: Counter = Counter()
+        for item in review_items:
+            for cat in item.get("flagged_categories", []):
+                flagged_dist[cat] += 1
+        if flagged_dist:
+            stats["distributions"] = {"flagged_categories": dict(flagged_dist.most_common())}
+
+    elif step_id == "download":
         sources: Counter = Counter()
         queries: Counter = Counter()
         for img in images:
