@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from ..utils import CLIPModel, collect_image_paths, load_image
+from utils import CLIPModel, collect_image_paths, load_image
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ def run_clip_filter(
     negative_prompts: list[str],
     threshold: float = 0.30,
     flagged_stems: set[str] | None = None,
+    resume: bool = False,
 ) -> dict:
     """Filter images using CLIP — keep only soil-related images.
 
@@ -50,7 +51,7 @@ def run_clip_filter(
     neg_features = clip_model.encode_texts(negative_prompts)
 
     # Existing output files for resume support
-    existing = {p.stem for p in output_dir.rglob("*.jpg")}
+    existing = {p.name for p in collect_image_paths(output_dir)} if resume else set()
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "w", newline="", encoding="utf-8") as f:
@@ -69,7 +70,7 @@ def run_clip_filter(
                     writer.writerow([p.name, "N/A", "N/A", "overlay"])
                     continue
                 # Skip already processed
-                if p.stem in existing:
+                if p.name in existing:
                     stats["kept"] += 1
                     continue
 

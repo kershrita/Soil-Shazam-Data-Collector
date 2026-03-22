@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +19,13 @@ app = typer.Typer(
     help="Soil Shazam Data Collector: automated soil image dataset mining pipeline using CLIP.",
     add_completion=False,
 )
+
+
+class DownloadSource(str, Enum):
+    all = "all"
+    bing = "bing"
+    google = "google"
+    flickr = "flickr"
 
 # Root of project — locate config relative to this file
 _PKG_ROOT = Path(__file__).resolve().parent
@@ -58,7 +66,6 @@ def _get_workers(cfg: dict) -> int:
     import os
     w = cfg.get("num_workers", 0)
     return w if w > 0 else (os.cpu_count() or 4)
-    return p
 
 
 # ─── DOWNLOAD ────────────────────────────────────────────────────────────────
@@ -66,7 +73,7 @@ def _get_workers(cfg: dict) -> int:
 
 @app.command()
 def download(
-    source: str = typer.Option("all", help="Source: bing, google, flickr, or all"),
+    source: DownloadSource = typer.Option(DownloadSource.all, help="Source: bing, google, flickr, or all"),
     limit: int = typer.Option(0, help="Max images per query per source (0 = use config default)"),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
@@ -85,18 +92,23 @@ def download(
     request_delay = dl_cfg.get("request_delay", 1.0)
     per_query_limit = limit if limit > 0 else dl_cfg["limit_per_query_per_source"]
     timeout = dl_cfg.get("timeout", 30)
+    max_retries = max(0, int(dl_cfg.get("max_retries", 0)))
     raw_dir = _resolve_path(cfg["paths"]["raw"])
 
     # Build downloaders
     from downloader import BingDownloader, FlickrDownloader, GoogleDownloader
 
     downloaders = []
-    if source in ("all", "bing"):
+    if source in (DownloadSource.all, DownloadSource.bing):
         downloaders.append(BingDownloader())
-    if source in ("all", "google"):
+    if source in (DownloadSource.all, DownloadSource.google):
         downloaders.append(GoogleDownloader())
-    if source in ("all", "flickr"):
+    if source in (DownloadSource.all, DownloadSource.flickr):
         downloaders.append(FlickrDownloader())
+
+    if not downloaders:
+        logger.error(f"No downloaders selected for source={source.value}")
+        raise typer.Exit(2)
 
     logger.info(
         f"Downloading images: {len(queries)} queries × {len(downloaders)} sources, "
@@ -114,7 +126,13 @@ def download(
         source_total = 0
 
         def _download_query(query: str) -> int:
-            paths = dl.download(query, per_query_limit, raw_dir, timeout)
+            paths = dl.download(
+                query,
+                per_query_limit,
+                raw_dir,
+                timeout,
+                max_retries=max_retries,
+            )
             time.sleep(request_delay)  # rate-limit between queries
             return len(paths)
 
@@ -171,6 +189,7 @@ def resize(
         output_dir=resized_dir,
         min_shortest_side=res_cfg["min_shortest_side"],
         max_longest_side=res_cfg["max_longest_side"],
+        resize_mode=res_cfg.get("resize_mode", "shortest_side"),
         jpeg_quality=res_cfg["jpeg_quality"],
         workers=workers,
     )
@@ -182,6 +201,10 @@ def resize(
 @app.command()
 def filter(
     threshold: float = typer.Option(0, help="Soil similarity threshold (0 = use config)"),
+    resume: bool = typer.Option(
+        False,
+        help="Resume from existing filtered outputs instead of recomputing from scratch.",
+    ),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
     log_level: str = typer.Option("INFO", help="Logging level"),
 ):
@@ -197,6 +220,10 @@ def filter(
     filtered_dir = _resolve_path(cfg["paths"]["filtered"])
     logs_dir = _resolve_path(cfg["paths"]["logs"])
     logs_dir.mkdir(parents=True, exist_ok=True)
+
+    if not resume and filtered_dir.exists():
+        import shutil
+        shutil.rmtree(filtered_dir)
 
     soil_threshold = threshold if threshold > 0 else filter_cfg["soil_threshold"]
 
@@ -234,6 +261,7 @@ def filter(
         negative_prompts=prompts["filter_soil"]["negative"],
         threshold=soil_threshold,
         flagged_stems=overlay_stems,
+        resume=resume,
     )
 
     # Persist actual thresholds used for this filter run (UI can read these later).
@@ -340,7 +368,10 @@ def export(
 
 @app.command(name="run-all")
 def run_all(
-    source: str = typer.Option("all", help="Download source: bing, google, ddg, or all"),
+    source: DownloadSource = typer.Option(
+        DownloadSource.all,
+        help="Download source: bing, google, flickr, or all",
+    ),
     limit: int = typer.Option(0, help="Max images per query per source (0 = use config)"),
     threshold: float = typer.Option(0, help="Soil filter threshold (0 = use config)"),
     skip_download: bool = typer.Option(False, help="Skip download step (use existing raw images)"),
@@ -372,7 +403,7 @@ def run_all(
 
     # Step 4: Filter
     logger.info("\n>>> STEP 4/5: Overlay + soil filtering...")
-    filter(threshold=threshold, config_dir=config_dir, log_level=log_level)
+    filter(threshold=threshold, resume=False, config_dir=config_dir, log_level=log_level)
 
     # Step 5: Label + Export
     logger.info("\n>>> STEP 5/5: CLIP feature labeling + export...")
@@ -472,6 +503,7 @@ def _fmt_pct(value) -> str:
 def webapp(
     port: int = typer.Option(5000, help="Port to run the Soil Shazam Data Collector web app on"),
     host: str = typer.Option("127.0.0.1", help="Host to bind to"),
+    debug: bool = typer.Option(False, help="Enable Flask debug mode (development only)."),
     config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
 ):
     """Launch the Soil Shazam Data Collector web app."""
@@ -479,7 +511,7 @@ def webapp(
 
     web_app = create_app(config_dir=config_dir)
     typer.echo(f"Starting Soil Shazam Data Collector at http://{host}:{port}")
-    web_app.run(host=host, port=port, debug=True)
+    web_app.run(host=host, port=port, debug=debug)
 
 
 if __name__ == "__main__":

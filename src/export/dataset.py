@@ -38,6 +38,12 @@ def run_export(
         return {"total": 0}
 
     labels = json.loads(labels_path.read_text(encoding="utf-8"))
+    if not labels:
+        logger.warning("labels.json is empty; exporting empty dataset artifacts")
+        (output_dir / "labels.json").write_text("[]\n", encoding="utf-8")
+        pd.DataFrame([]).to_csv(output_dir / "labels.csv", index=False, encoding="utf-8")
+        (output_dir / "labels_full.json").write_text("[]\n", encoding="utf-8")
+        return {"total": 0}
 
     # Apply corrections if available
     if corrections_path and corrections_path.exists():

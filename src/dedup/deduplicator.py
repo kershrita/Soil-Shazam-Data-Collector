@@ -5,15 +5,47 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from tqdm import tqdm
 
-from ..utils import collect_image_paths
+from utils import collect_image_paths
 
 logger = logging.getLogger(__name__)
+
+
+def _find_duplicates_single_process(
+    encodings: dict[str, str],
+    threshold: int,
+) -> dict[str, list[str]]:
+    """Find duplicate filename groups without multiprocessing (Windows-safe)."""
+    if not encodings:
+        return {}
+
+    names = list(encodings.keys())
+    hash_ints: list[int | None] = []
+    for name in names:
+        try:
+            hash_ints.append(int(encodings[name], 16))
+        except (TypeError, ValueError):
+            hash_ints.append(None)
+
+    duplicates: dict[str, list[str]] = {}
+    for i in tqdm(range(len(names)), desc="Finding duplicates (single-process)"):
+        name_i = names[i]
+        hi = hash_ints[i]
+        dup_list: list[str] = []
+        for j in range(i + 1, len(names)):
+            hj = hash_ints[j]
+            if hi is None or hj is None:
+                continue
+            distance = (hi ^ hj).bit_count()
+            if distance <= threshold:
+                dup_list.append(names[j])
+        if dup_list:
+            duplicates[name_i] = dup_list
+    return duplicates
 
 
 def _phash_dedup(
@@ -60,12 +92,8 @@ def _phash_dedup(
     if errors:
         logger.warning(f"Skipped {errors} images that failed to hash")
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=RuntimeWarning)
-        duplicates = hasher.find_duplicates(
-            encoding_map=encodings,
-            max_distance_threshold=threshold,
-        )
+    # Avoid imagededup multiprocessing retrieval on Windows-restricted environments.
+    duplicates = _find_duplicates_single_process(encodings, threshold)
 
     # Determine which files to remove — keep the first in each group
     to_remove: set[str] = set()
@@ -104,11 +132,16 @@ def run_deduplication(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     images_dir = input_dir / "images" if (input_dir / "images").exists() else input_dir
+    out_images_dir = output_dir / "images"
+    out_images_dir.mkdir(parents=True, exist_ok=True)
 
     image_paths = collect_image_paths(images_dir)
     stats = {"total": len(image_paths), "removed": 0, "kept": 0}
 
     if not image_paths:
+        for stale in collect_image_paths(out_images_dir):
+            stale.unlink(missing_ok=True)
+        (output_dir / "dedup_groups.json").write_text("{}", encoding="utf-8")
         return stats
 
     phash_remove, phash_groups = _phash_dedup(images_dir, phash_threshold, num_workers)
@@ -125,16 +158,19 @@ def run_deduplication(
     )
     logger.info(f"Saved duplicate group mapping to {groups_path}")
 
+    # Synchronize output directory with current surviving set
+    surviving_names = {p.name for p in surviving}
+    for existing in collect_image_paths(out_images_dir):
+        if existing.name not in surviving_names:
+            existing.unlink(missing_ok=True)
+
     # Copy surviving images — parallel I/O
-    out_images_dir = output_dir / "images"
-    out_images_dir.mkdir(parents=True, exist_ok=True)
 
     copy_workers = min(num_workers, 16)
 
     def _copy(p: Path) -> None:
         dest = out_images_dir / p.name
-        if not dest.exists():
-            shutil.copy2(p, dest)
+        shutil.copy2(p, dest)
 
     with ThreadPoolExecutor(max_workers=copy_workers) as pool:
         list(tqdm(pool.map(_copy, surviving), total=len(surviving), desc="Copying deduplicated images"))

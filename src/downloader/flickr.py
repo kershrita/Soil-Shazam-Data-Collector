@@ -11,6 +11,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import requests
 
@@ -43,6 +44,7 @@ class FlickrDownloader(ImageDownloader):
         limit: int,
         output_dir: Path,
         timeout: int = 30,
+        max_retries: int = 0,
     ) -> list[Path]:
         target_dir = self._make_output_dir(output_dir, query)
         existing = self._count_existing(target_dir)
@@ -59,7 +61,7 @@ class FlickrDownloader(ImageDownloader):
                 time.sleep(_QUERY_DELAY - elapsed)
             FlickrDownloader._last_search_time = time.time()
 
-        image_urls = self._search_images(query, limit, timeout)
+        image_urls = self._search_images(query, limit, timeout, max_retries=max_retries)
 
         downloaded: list[Path] = []
         session = requests.Session()
@@ -69,7 +71,13 @@ class FlickrDownloader(ImageDownloader):
             if len(downloaded) >= limit:
                 break
             try:
-                resp = session.get(url, timeout=timeout, stream=True)
+                resp = self._get_with_retries(
+                    session,
+                    url,
+                    timeout=timeout,
+                    max_retries=max_retries,
+                    stream=True,
+                )
                 resp.raise_for_status()
 
                 content_type = resp.headers.get("content-type", "")
@@ -102,7 +110,29 @@ class FlickrDownloader(ImageDownloader):
         logger.info(f"[flickr] Got {len(downloaded)} images for '{query}'")
         return downloaded
 
-    def _search_images(self, query: str, limit: int, timeout: int) -> list[str]:
+    @staticmethod
+    def _get_with_retries(
+        session: requests.Session,
+        url: str,
+        timeout: int,
+        max_retries: int = 0,
+        **kwargs: Any,
+    ) -> requests.Response:
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                return session.get(url, timeout=timeout, **kwargs)
+            except requests.RequestException as e:
+                last_error = e
+                if attempt < max_retries:
+                    time.sleep(min(1.0 * (attempt + 1), 5.0))
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Unreachable: retry loop ended without response or error")
+
+    def _search_images(
+        self, query: str, limit: int, timeout: int, max_retries: int = 0
+    ) -> list[str]:
         """Gather image URLs from Flickr feed + paginated website search."""
         urls: list[str] = []
         seen: set[str] = set()
@@ -112,12 +142,15 @@ class FlickrDownloader(ImageDownloader):
         # Source 1: Public feed API (always returns 20, fast, reliable)
         try:
             tags = query.replace(" ", ",")
-            resp = requests.get(
-                "https://api.flickr.com/services/feeds/photos_public.gne",
-                params={"tags": tags, "tagmode": "all", "format": "json", "nojsoncallback": 1},
-                headers=_HEADERS,
-                timeout=timeout,
-            )
+            with requests.Session() as session:
+                session.headers.update(_HEADERS)
+                resp = self._get_with_retries(
+                    session,
+                    "https://api.flickr.com/services/feeds/photos_public.gne",
+                    params={"tags": tags, "tagmode": "all", "format": "json", "nojsoncallback": 1},
+                    timeout=timeout,
+                    max_retries=max_retries,
+                )
             resp.raise_for_status()
             data = resp.json()
             for item in data.get("items", []):
@@ -136,12 +169,15 @@ class FlickrDownloader(ImageDownloader):
         consecutive_empty = 0
         while len(urls) < target:
             try:
-                resp = requests.get(
-                    "https://www.flickr.com/search/",
-                    params={"text": query, "media": "photos", "content_type": 1, "page": page},
-                    headers=_HEADERS,
-                    timeout=timeout,
-                )
+                with requests.Session() as session:
+                    session.headers.update(_HEADERS)
+                    resp = self._get_with_retries(
+                        session,
+                        "https://www.flickr.com/search/",
+                        params={"text": query, "media": "photos", "content_type": 1, "page": page},
+                        timeout=timeout,
+                        max_retries=max_retries,
+                    )
                 resp.raise_for_status()
                 found = re.findall(r"(live\.staticflickr\.com/\S+?\.jpg)", resp.text)
                 new_count = 0

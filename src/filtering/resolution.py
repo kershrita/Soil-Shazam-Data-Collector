@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from ..utils import (
+from utils import (
     check_resolution,
     collect_image_paths,
     load_image,
@@ -42,6 +42,7 @@ def _process_one(
     existing: set[str],
     min_shortest_side: int,
     max_longest_side: int,
+    resize_mode: str,
     jpeg_quality: int,
 ) -> str:
     """Process a single image. Returns a status string: kept, skipped, discarded, resized, error."""
@@ -57,7 +58,7 @@ def _process_one(
         return "discarded"
 
     original_size = img.size
-    img = resize_image(img, max_longest_side)
+    img = resize_image(img, max_longest_side, mode=resize_mode)
     was_resized = img.size != original_size
 
     out_path = output_dir / f"{out_name}.jpg"
@@ -70,6 +71,7 @@ def run_resolution_filter(
     output_dir: Path,
     min_shortest_side: int = 512,
     max_longest_side: int = 1024,
+    resize_mode: str = "shortest_side",
     jpeg_quality: int = 95,
     workers: int = 8,
 ) -> dict:
@@ -100,6 +102,7 @@ def run_resolution_filter(
                 existing,
                 min_shortest_side,
                 max_longest_side,
+                resize_mode,
                 jpeg_quality,
             ): path
             for path in image_paths

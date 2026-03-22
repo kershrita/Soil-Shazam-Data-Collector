@@ -123,7 +123,7 @@ def _compute_filter_metrics(accepted: list[dict], rejected: list[dict]) -> dict:
             "rejected_evaluated": len(rejected),
         })
 
-        if precision + recall > 0 and recall is not None:
+        if recall is not None and (precision + recall) > 0:
             f1 = 2 * precision * recall / (precision + recall)
             result["f1"] = round(f1, 4)
     else:

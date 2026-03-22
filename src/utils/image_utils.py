@@ -46,15 +46,21 @@ def resize_image(
     Only resizes if the image is larger than the target.
     """
     w, h = img.size
-    shortest = min(w, h)
+    if mode not in {"shortest_side", "longest_side"}:
+        logger.warning(f"Unknown resize mode '{mode}', falling back to shortest_side")
+        mode = "shortest_side"
 
-    if shortest <= max_longest_side:
+    shortest = min(w, h)
+    longest = max(w, h)
+    metric = shortest if mode == "shortest_side" else longest
+    if metric <= max_longest_side:
         return img
 
-    scale = max_longest_side / shortest
+    scale_base = shortest if mode == "shortest_side" else longest
+    scale = max_longest_side / scale_base
     new_w = round(w * scale)
     new_h = round(h * scale)
-    return img.resize((new_w, new_h), Image.LANCZOS)
+    return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
 
 def save_as_jpeg(img: Image.Image, path: Path, quality: int = 95) -> None:

@@ -10,8 +10,6 @@ from .image_utils import (
 from .logging import setup_logging
 
 __all__ = [
-    "CLIPModel",
-    "get_clip_model",
     "IMAGE_EXTENSIONS",
     "check_resolution",
     "collect_image_paths",
@@ -31,4 +29,3 @@ def __getattr__(name: str):
         globals()["get_clip_model"] = get_clip_model
         return globals()[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-

@@ -12,6 +12,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote_plus
 
 import requests
@@ -77,6 +78,7 @@ class GoogleDownloader(ImageDownloader):
         limit: int,
         output_dir: Path,
         timeout: int = 30,
+        max_retries: int = 0,
     ) -> list[Path]:
         target_dir = self._make_output_dir(output_dir, query)
         existing = self._count_existing(target_dir)
@@ -97,13 +99,26 @@ class GoogleDownloader(ImageDownloader):
         session = requests.Session()
         session.headers.update(_HEADERS)
 
+        def _get_with_retries(url: str, **kwargs: Any) -> requests.Response:
+            last_error = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return session.get(url, timeout=timeout, **kwargs)
+                except requests.RequestException as e:
+                    last_error = e
+                    if attempt < max_retries:
+                        time.sleep(min(1.0 * (attempt + 1), 5.0))
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("Unreachable: retry loop ended without response or error")
+
         try:
             # Fetch Google Images search results page
             search_url = (
                 f"https://www.google.com/search?q={quote_plus(query)}"
                 f"&tbm=isch&ijn=0"
             )
-            resp = session.get(search_url, timeout=timeout)
+            resp = _get_with_retries(search_url)
             resp.raise_for_status()
 
             image_urls = _extract_image_urls(resp.text, limit * 3)  # get extras for failures
@@ -113,7 +128,7 @@ class GoogleDownloader(ImageDownloader):
                 if len(downloaded) >= limit:
                     break
                 try:
-                    img_resp = session.get(url, timeout=timeout, stream=True)
+                    img_resp = _get_with_retries(url, stream=True)
                     img_resp.raise_for_status()
 
                     content_type = img_resp.headers.get("content-type", "")

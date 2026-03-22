@@ -30,6 +30,7 @@ class ImageDownloader(abc.ABC):
         limit: int,
         output_dir: Path,
         timeout: int = 30,
+        max_retries: int = 0,
     ) -> list[Path]:
         """Download images for a query.
 
@@ -38,6 +39,7 @@ class ImageDownloader(abc.ABC):
             limit: Maximum number of images to download.
             output_dir: Root output directory (source/query subdirs created inside).
             timeout: HTTP timeout in seconds.
+            max_retries: Additional retry attempts for transient failures.
 
         Returns:
             List of paths to downloaded image files.

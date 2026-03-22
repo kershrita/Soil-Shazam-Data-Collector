@@ -240,8 +240,8 @@ def create_app(config_dir: Path | None = None) -> Flask:
         if not step:
             return jsonify({"error": "Step not found"}), 404
 
-        page = request.args.get("page", 1, type=int)
-        per_page = request.args.get("per_page", 60, type=int)
+        page = max(1, request.args.get("page", 1, type=int))
+        per_page = min(200, max(1, request.args.get("per_page", 60, type=int)))
         search = request.args.get("search", "", type=str).strip().lower()
         reason_filter = request.args.get("reason", "", type=str).strip().lower()
         view = request.args.get("view", "kept", type=str).strip().lower()
@@ -423,7 +423,7 @@ def create_app(config_dir: Path | None = None) -> Flask:
 
         results = []
         for img in page_images:
-            entry = {
+            entry: dict[str, object] = {
                 "filename": img,
                 "url": f"/images/{step_id}/{img}",
                 "thumb_url": f"/thumbnails/{step_id}/{img}",

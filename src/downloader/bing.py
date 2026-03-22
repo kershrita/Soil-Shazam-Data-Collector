@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from .base import ImageDownloader
-from ..utils import IMAGE_EXTENSIONS
+from utils import IMAGE_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ class BingDownloader(ImageDownloader):
         limit: int,
         output_dir: Path,
         timeout: int = 30,
+        max_retries: int = 0,
     ) -> list[Path]:
         from bing_image_downloader import downloader as bing_dl
 
@@ -47,32 +48,41 @@ class BingDownloader(ImageDownloader):
                 time.sleep(_QUERY_DELAY - elapsed)
             BingDownloader._last_search_time = time.time()
 
-        try:
-            # bing-image-downloader creates a subdirectory named after the query
-            bing_dl.download(
-                query,
-                limit=limit,
-                output_dir=str(target_dir.parent),
-                adult_filter_off=False,
-                force_replace=False,
-                timeout=timeout,
-                verbose=False,
-            )
-            # Move files from the query-named subdir into our target dir
-            query_subdir = target_dir.parent / query
-            if query_subdir.exists() and query_subdir != target_dir:
-                for f in query_subdir.iterdir():
-                    if f.is_file():
-                        dest = target_dir / f.name
-                        if not dest.exists():
-                            f.rename(dest)
-                # Clean up the extra directory
-                try:
-                    query_subdir.rmdir()
-                except OSError:
-                    pass
-        except Exception as e:
-            logger.error(f"[bing] Error downloading '{query}': {e}")
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                # bing-image-downloader creates a subdirectory named after the query
+                bing_dl.download(
+                    query,
+                    limit=limit,
+                    output_dir=str(target_dir.parent),
+                    adult_filter_off=False,
+                    force_replace=False,
+                    timeout=timeout,
+                    verbose=False,
+                )
+                # Move files from the query-named subdir into our target dir
+                query_subdir = target_dir.parent / query
+                if query_subdir.exists() and query_subdir != target_dir:
+                    for f in query_subdir.iterdir():
+                        if f.is_file():
+                            dest = target_dir / f.name
+                            if not dest.exists():
+                                f.rename(dest)
+                    # Clean up the extra directory
+                    try:
+                        query_subdir.rmdir()
+                    except OSError:
+                        pass
+                last_error = None
+                break
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    time.sleep(min(1.0 * (attempt + 1), 5.0))
+
+        if last_error is not None:
+            logger.error(f"[bing] Error downloading '{query}': {last_error}")
 
         downloaded = [
             p for p in target_dir.iterdir()
