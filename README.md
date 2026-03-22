@@ -19,7 +19,8 @@ Build a high-quality, evaluation-ready soil image dataset from web sources with 
 5. `label` images across 7 soil categories
 6. `annotate` in web UI for evaluation ground truth
 7. `eval-report` to compute metrics
-8. `export` final dataset files
+8. `cluster-review` to build cluster-assisted review queues
+9. `export` final dataset files
 
 ## Label Categories
 
@@ -67,6 +68,7 @@ soil-shazam-data-collector resize
 soil-shazam-data-collector dedup
 soil-shazam-data-collector filter
 soil-shazam-data-collector label
+soil-shazam-data-collector cluster-review
 soil-shazam-data-collector export
 ```
 
@@ -95,6 +97,22 @@ Generated outputs (under `evaluation/`):
 - `sample.json`
 - `metrics.json`
 - `report.md`
+
+### Build Cluster Review Queues
+
+```bash
+soil-shazam-data-collector cluster-review
+```
+
+Generated outputs (under `data/clustering/<run_id>/`):
+
+- `clusters.json`
+- `review_queue.json`
+- `suggestions.json`
+- `summary.json`
+
+Label step now also persists reusable CLIP features in `data/labeled/embeddings.npz`
+so `cluster-review` can reuse them instead of re-encoding images.
 
 ## Configuration
 

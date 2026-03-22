@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Added `cluster-review` CLI workflow for cluster-assisted review queue generation on accepted images.
+- Added hybrid clustering pipeline with cached CLIP embeddings, PCA + auto-tuned KMeans, and annotation-seed refinement.
+- Added conservative suggestion gating and priority-ranked review queue artifacts under `data/clustering/<run_id>/`.
+- Added clustering defaults to `config/pipeline.yaml`.
+- Added test coverage for auto-k selection, conservative gating behavior, and annotation seed mapping integration.
+- Added persisted embedding export from the `label` step (`data/labeled/embeddings.npz`) for downstream reuse.
+
 ### Fixed
 - Resolved package/runtime import issues by replacing fragile parent-relative imports in pipeline modules with stable absolute imports.
 - Fixed Windows dedup runtime failure by removing multiprocessing dependency in duplicate retrieval and using a single-process matching path.
@@ -31,4 +39,3 @@ All notable changes to this project will be documented in this file.
 - Flask web application for pipeline browsing, annotation, and evaluation dashboards.
 - Dataset export outputs (JSON/CSV/full labels with scores).
 - Config-driven pipeline settings, prompts, and queries under `config/`.
-

@@ -34,6 +34,18 @@ download:
 dedup:
   phash_threshold: 10            # Max hamming distance for perceptual hash (0=identical, lower=stricter)
 
+# --- Cluster-assisted review settings ---
+clustering:
+  k_min: 18                      # Minimum clusters considered by auto-k selection
+  k_max: 40                      # Maximum clusters considered by auto-k selection
+  pca_dim: 128                   # Dimensionality after PCA before KMeans
+  knn_k: 7                       # Number of nearest annotation seeds for vote aggregation
+  vote_ratio_min: 0.80           # Minimum consensus ratio for cluster and seed votes
+  similarity_min: 0.28           # Minimum seed cosine similarity for suggestion acceptance
+  margin_min: 0.03               # Minimum model confidence margin (best - runner-up)
+  outlier_quantile_max: 0.90     # Cluster distance quantile above which images are flagged as outliers
+  batch_size: 25                 # Embedding batch size used by cluster-review
+
 # --- Output paths ---
 paths:
   raw: "data/raw"

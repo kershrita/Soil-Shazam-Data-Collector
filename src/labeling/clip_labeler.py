@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 from tqdm import tqdm
 
 from utils import CLIPModel, collect_image_paths, load_image
@@ -19,6 +21,9 @@ def run_clip_labeling(
     output_dir: Path,
     clip_model: CLIPModel,
     label_prompts: dict[str, dict[str, list[str] | str]],
+    model_name: str = "unknown",
+    pretrained: str = "unknown",
+    persist_embeddings: bool = True,
 ) -> list[dict]:
     """Label filtered soil images using CLIP similarity scoring.
 
@@ -73,28 +78,55 @@ def run_clip_labeling(
     all_labels: list[dict] = list(existing_labels.values())
     existing_images = set(existing_labels.keys())
 
+    embeddings_path = output_dir / "embeddings.npz"
+    embeddings_meta_path = output_dir / "embeddings_meta.json"
+    embedding_store: dict[str, np.ndarray] = {}
+    if persist_embeddings and embeddings_path.exists():
+        try:
+            cached = np.load(embeddings_path)
+            cached_images = [str(x) for x in cached["images"].tolist()]
+            cached_embeddings = np.asarray(cached["embeddings"], dtype=np.float32)
+            if (
+                cached_embeddings.ndim == 2
+                and len(cached_images) == cached_embeddings.shape[0]
+            ):
+                for idx, name in enumerate(cached_images):
+                    embedding_store[name] = cached_embeddings[idx]
+                logger.info(f"Loaded cached label embeddings: {len(embedding_store)}")
+        except (OSError, ValueError, KeyError):
+            logger.warning("Ignoring invalid embeddings cache in label output")
+
     batch_size = clip_model.batch_size
     for i in tqdm(range(0, len(image_paths), batch_size), desc="CLIP labeling"):
         batch_paths = image_paths[i : i + batch_size]
         images = []
-        valid_paths = []
+        encoded_items: list[tuple[Path, bool]] = []
 
         for p in batch_paths:
-            if p.name in existing_images:
+            should_label = p.name not in existing_images
+            should_embed = persist_embeddings and p.name not in embedding_store
+            if not should_label and not should_embed:
                 continue
             img = load_image(p)
             if img is not None:
                 images.append(img)
-                valid_paths.append(p)
+                encoded_items.append((p, should_label))
 
         if not images:
             continue
 
         # Encode images once
         img_features = clip_model.encode_images(images)
+        img_features_arr = np.asarray(img_features, dtype=np.float32)
 
         # Score against each category
-        for idx, path in enumerate(valid_paths):
+        for idx, (path, should_label) in enumerate(encoded_items):
+            if persist_embeddings:
+                embedding_store[path.name] = img_features_arr[idx]
+
+            if not should_label:
+                continue
+
             entry: dict = {"image": path.name, "scores": {}}
             img_feat = img_features[idx : idx + 1]  # (1, embed_dim)
 
@@ -131,6 +163,40 @@ def run_clip_labeling(
         json.dumps(all_labels, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+    if persist_embeddings and all_labels:
+        save_images: list[str] = []
+        save_vectors: list[np.ndarray] = []
+        for entry in all_labels:
+            image_name = entry.get("image")
+            if not image_name:
+                continue
+            vec = embedding_store.get(str(image_name))
+            if vec is None:
+                continue
+            save_images.append(str(image_name))
+            save_vectors.append(np.asarray(vec, dtype=np.float32))
+
+        if save_vectors:
+            matrix = np.vstack(save_vectors).astype(np.float32)
+            np.savez_compressed(
+                embeddings_path,
+                images=np.array(save_images, dtype=np.str_),
+                embeddings=matrix,
+            )
+            embeddings_meta_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "count": len(save_images),
+                        "model_name": model_name,
+                        "pretrained": pretrained,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            logger.info(f"Saved label embeddings: {len(save_images)} -> {embeddings_path}")
 
     logger.info(f"CLIP labeling done: {len(all_labels)} images labeled, saved to {labels_path}")
     return all_labels

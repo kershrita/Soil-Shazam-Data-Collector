@@ -308,6 +308,9 @@ def label(
         output_dir=labeled_dir,
         clip_model=clip_model,
         label_prompts=prompts["labeling"],
+        model_name=clip_cfg["model_name"],
+        pretrained=clip_cfg["pretrained"],
+        persist_embeddings=True,
     )
 
 
@@ -488,6 +491,77 @@ def eval_report(
 
     typer.echo(f"\nFull report: {report_path}")
     typer.echo(f"Raw metrics: {eval_dir / 'metrics.json'}")
+
+
+@app.command(name="cluster-review")
+def cluster_review(
+    max_images: int = typer.Option(
+        0,
+        help="Optional cap for accepted images to process (0 = all).",
+    ),
+    force_recompute_embeddings: bool = typer.Option(
+        False,
+        help="Recompute CLIP embeddings even when a valid cache exists.",
+    ),
+    config_dir: Optional[Path] = typer.Option(None, help="Path to config directory"),
+    log_level: str = typer.Option("INFO", help="Logging level"),
+):
+    """Build cluster-assisted review queues and conservative label suggestions."""
+    setup_logging(log_level)
+
+    cfg = _get_config(config_dir)
+    clip_cfg = cfg["clip"]
+    clustering_cfg = cfg.get("clustering", {})
+
+    labeled_dir = _resolve_path(cfg["paths"]["labeled"])
+    dataset_dir = _resolve_path(cfg["paths"]["dataset"])
+    clustering_root = dataset_dir.parent / "clustering"
+
+    from utils import get_clip_model
+
+    clip_model = get_clip_model(
+        model_name=clip_cfg["model_name"],
+        pretrained=clip_cfg["pretrained"],
+        device=clip_cfg["device"],
+        batch_size=clip_cfg["batch_size"],
+    )
+
+    from clustering import run_cluster_review
+
+    summary = run_cluster_review(
+        labeled_dir=labeled_dir,
+        dataset_dir=dataset_dir,
+        output_root=clustering_root,
+        clip_model=clip_model,
+        clip_cfg=clip_cfg,
+        cluster_cfg=clustering_cfg,
+        max_images=max_images,
+        force_recompute_embeddings=force_recompute_embeddings,
+    )
+
+    counts = summary.get("counts", {})
+    quality = summary.get("quality_controls", {})
+    artifacts = summary.get("artifacts", {})
+
+    typer.echo("\n" + "=" * 60)
+    typer.echo("CLUSTER REVIEW COMPLETE")
+    typer.echo("=" * 60)
+    typer.echo(f"Accepted images processed: {counts.get('accepted_images', 0)}")
+    typer.echo(f"Clusters built:            {counts.get('clusters', 0)}")
+    typer.echo(f"Review queue items:        {counts.get('review_queue_items', 0)}")
+    typer.echo(f"Suggestion items:          {counts.get('suggestion_items', 0)}")
+    typer.echo(f"Suggested label slots:     {counts.get('suggested_category_slots', 0)}")
+    typer.echo(f"Source labels unchanged:   {quality.get('source_labels_unchanged')}")
+
+    concentration = (quality.get("priority_concentration") or {}).get("concentration_factor")
+    if concentration is not None:
+        typer.echo(f"Top-slice concentration:   {concentration:.3f}x")
+
+    typer.echo(f"\nRun directory:  {artifacts.get('run_dir')}")
+    typer.echo(f"clusters.json:  {artifacts.get('clusters')}")
+    typer.echo(f"review_queue:   {artifacts.get('review_queue')}")
+    typer.echo(f"suggestions:    {artifacts.get('suggestions')}")
+    typer.echo(f"summary:        {artifacts.get('summary')}")
 
 
 def _fmt_pct(value) -> str:
