@@ -119,6 +119,30 @@ def list_images(step_id: str, cfg: dict) -> list[str]:
             if p.is_file() and p.suffix.lower() in IMAGE_EXTS
         )
 
+    # Single-store fallback: filter kept set is represented in logs even if
+    # filtered/images is intentionally empty.
+    if step_id == "filter" and not result:
+        soil_map = build_soil_score_map(cfg)
+        result = sorted(
+            fn for fn, info in soil_map.items()
+            if str(info.get("kept", "")).strip().lower() == "true"
+        )
+
+    # Single-store fallback: label image list can come from labels.json.
+    if step_id == "label" and not result:
+        try:
+            base = step_base_dir(step_id, cfg)
+            labels_path = base / "labels.json"
+            if labels_path.exists():
+                rows = json.loads(labels_path.read_text(encoding="utf-8"))
+                result = sorted(
+                    str(r.get("image", "")).strip()
+                    for r in rows
+                    if str(r.get("image", "")).strip()
+                )
+        except (json.JSONDecodeError, OSError, TypeError):
+            result = []
+
     cache.set(cache_key, result)
     return result
 
@@ -257,11 +281,19 @@ def build_pipeline_precheck(cfg: dict) -> list[dict]:
     eval_sample_path = eval_dir / "sample.json"
     eval_metrics_path = eval_dir / "metrics.json"
 
+    filtered_count = len(collect_image_paths(filtered_dir)) if filtered_dir.exists() else 0
+    if filtered_count == 0:
+        soil_rows = load_filter_log(cfg, "soil_filter.csv")
+        filtered_count = sum(
+            1 for r in soil_rows
+            if str(r.get("kept", "")).strip().lower() == "true"
+        )
+
     counts = {
         "raw": len(collect_image_paths(raw_dir)) if raw_dir.exists() else 0,
         "resized": len(collect_image_paths(resized_dir)) if resized_dir.exists() else 0,
         "deduped": len(collect_image_paths(deduped_dir)) if deduped_dir.exists() else 0,
-        "filtered": len(collect_image_paths(filtered_dir)) if filtered_dir.exists() else 0,
+        "filtered": filtered_count,
     }
 
     def first_source(candidates: list[tuple[str, str]]) -> tuple[str, int] | None:
@@ -680,11 +712,26 @@ def list_rejected_images(cfg: dict) -> list[str]:
 
 
 def list_dedup_removed_images(cfg: dict) -> list[str]:
-    """Return filenames removed during dedup (in resized/ but not in deduped/)."""
+    """Return filenames removed during dedup."""
     cached = cache.get("dedup_removed")
     if cached is not None:
         return cached
 
+    # Primary source: explicit dedup_groups.json mapping.
+    groups = load_dedup_groups(cfg)
+    if groups:
+        removed = sorted(
+            {
+                name
+                for removed_list in groups.values()
+                for name in (removed_list or [])
+                if str(name).strip()
+            }
+        )
+        cache.set("dedup_removed", removed)
+        return removed
+
+    # Fallback: infer by resized - deduped diff (legacy behavior).
     resized_dir = resolve(cfg["paths"]["resized"])
     deduped_dir = resolve(cfg["paths"]["deduped"])
     resized_imgs = resized_dir / "images" if (resized_dir / "images").is_dir() else resized_dir

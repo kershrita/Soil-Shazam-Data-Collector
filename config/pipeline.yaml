@@ -2,6 +2,7 @@
 
 # --- Shared parallelism ---
 num_workers: 0                   # Parallel workers for all CPU/IO-bound steps (0=auto, uses all CPUs)
+single_image_store: true         # Keep canonical images in deduped/images; later steps write metadata/artifacts only
 
 # --- Resolution settings ---
 resolution:

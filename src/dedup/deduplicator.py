@@ -10,7 +10,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from utils import canonical_image_name, collect_image_paths
+from utils import canonical_image_name, collect_image_paths, update_manifest_after_dedup
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +179,17 @@ def run_deduplication(
 
     with ThreadPoolExecutor(max_workers=copy_workers) as pool:
         list(tqdm(pool.map(_copy, surviving_names), total=len(surviving_names), desc="Copying deduplicated images"))
+
+    source_paths = {
+        name: str(path.relative_to(images_dir)).replace("\\", "/")
+        for name, path in canonical_to_path.items()
+    }
+    update_manifest_after_dedup(
+        manifest_path=output_dir / "pipeline_manifest.json",
+        kept_images=surviving_names,
+        dedup_groups=phash_groups,
+        source_paths=source_paths,
+    )
 
     logger.info(
         f"Dedup done: {stats['kept']} kept, {stats['removed']} removed (PHash)"

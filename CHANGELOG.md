@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Added single-image-store mode (`single_image_store: true`) so canonical images stay in `data/deduped/images` and downstream steps avoid redundant image copies.
+- Added unified pipeline manifest at `data/deduped/pipeline_manifest.json` with per-image `dedup` / `filter` / `label` metadata.
 - Added `cluster-review` CLI workflow for cluster-assisted review queue generation on accepted images.
 - Added hybrid clustering pipeline with cached CLIP embeddings, PCA + auto-tuned KMeans, and annotation-seed refinement.
 - Added conservative suggestion gating and priority-ranked review queue artifacts under `data/clustering/<run_id>/`.
@@ -17,6 +19,7 @@ All notable changes to this project will be documented in this file.
 - Added a dashboard "Run Health / Precheck" panel and `/api/precheck` endpoint that show missing prerequisite files and the next command to run.
 
 ### Fixed
+- Fixed filter/label/eval/export/webapp behavior to support metadata-first operation when `filtered/images` and `labeled/images` are intentionally empty.
 - Resolved package/runtime import issues by replacing fragile parent-relative imports in pipeline modules with stable absolute imports.
 - Fixed Windows dedup runtime failure by removing multiprocessing dependency in duplicate retrieval and using a single-process matching path.
 - Fixed evaluation metric edge case where `recall=None` could raise during F1 computation.

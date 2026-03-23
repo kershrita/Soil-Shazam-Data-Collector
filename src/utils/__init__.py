@@ -9,6 +9,14 @@ from .image_utils import (
     save_as_jpeg,
 )
 from .logging import setup_logging
+from .pipeline_manifest import (
+    ensure_manifest_entry,
+    load_pipeline_manifest,
+    mark_manifest_step,
+    save_pipeline_manifest,
+    update_manifest_after_dedup,
+    update_manifest_after_label,
+)
 
 __all__ = [
     "IMAGE_EXTENSIONS",
@@ -20,6 +28,12 @@ __all__ = [
     "resize_image",
     "save_as_jpeg",
     "setup_logging",
+    "ensure_manifest_entry",
+    "load_pipeline_manifest",
+    "mark_manifest_step",
+    "save_pipeline_manifest",
+    "update_manifest_after_dedup",
+    "update_manifest_after_label",
 ]
 
 

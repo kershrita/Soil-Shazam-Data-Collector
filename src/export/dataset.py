@@ -17,6 +17,7 @@ def run_export(
     input_dir: Path,
     corrections_path: Path | None,
     output_dir: Path,
+    fallback_image_dirs: list[Path] | None = None,
 ) -> dict:
     """Export the final clean dataset.
 
@@ -67,6 +68,7 @@ def run_export(
 
     # Determine image source directory
     images_in = input_dir / "images" if (input_dir / "images").exists() else input_dir
+    fallback_image_dirs = fallback_image_dirs or []
 
     # Copy images with sequential naming and update labels
     categories = [k for k in labels[0].keys() if k not in ("image", "scores")]
@@ -77,6 +79,12 @@ def run_export(
         new_name = f"soil_{i + 1:05d}.jpg"
 
         src = images_in / old_name
+        if not src.exists():
+            for alt in fallback_image_dirs:
+                candidate = alt / old_name
+                if candidate.exists():
+                    src = candidate
+                    break
         dst = images_out / new_name
 
         if src.exists() and not dst.exists():

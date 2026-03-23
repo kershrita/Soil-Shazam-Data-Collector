@@ -11,7 +11,13 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from utils import CLIPModel, canonical_image_name, collect_image_paths, load_image
+from utils import (
+    CLIPModel,
+    canonical_image_name,
+    collect_image_paths,
+    load_image,
+    update_manifest_after_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +30,15 @@ def run_clip_labeling(
     model_name: str = "unknown",
     pretrained: str = "unknown",
     persist_embeddings: bool = True,
+    copy_images: bool = True,
+    include_filenames: set[str] | None = None,
+    manifest_path: Path | None = None,
 ) -> list[dict]:
-    """Label filtered soil images using CLIP similarity scoring.
+    """Label soil images using CLIP similarity scoring.
 
     Args:
-        input_dir: Directory with filtered soil images.
-        output_dir: Directory to copy images and save labels.
+        input_dir: Directory containing source images for labeling.
+        output_dir: Directory to save labels/embeddings (and optionally images).
         clip_model: Loaded CLIPModel instance.
         label_prompts: Nested dict — {category: {label: prompt_or_list}}.
             Each label may map to a single prompt string or a list of prompts.
@@ -40,15 +49,23 @@ def run_clip_labeling(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     images_dir = output_dir / "images"
-    images_dir.mkdir(parents=True, exist_ok=True)
+    if copy_images:
+        images_dir.mkdir(parents=True, exist_ok=True)
 
     image_paths = collect_image_paths(input_dir)
+    include_filenames = set(include_filenames or [])
+    name_root = input_dir / "images" if (input_dir / "images").is_dir() else input_dir
+    if include_filenames:
+        image_paths = [
+            p for p in image_paths
+            if canonical_image_name(p, name_root) in include_filenames
+        ]
+
     if not image_paths:
         logger.warning("No images found for labeling")
         return []
 
     logger.info(f"CLIP labeling: processing {len(image_paths)} images across {len(label_prompts)} categories")
-    name_root = input_dir / "images" if (input_dir / "images").is_dir() else input_dir
 
     # Pre-encode all prompts per category.
     # Each label may have a list of prompts; scores are averaged across them (ensemble).
@@ -155,10 +172,11 @@ def run_clip_labeling(
 
             all_labels.append(entry)
 
-            # Copy image to output
-            dest = images_dir / image_name
-            if not dest.exists():
-                shutil.copy2(path, dest)
+            # Optional image copy to output
+            if copy_images:
+                dest = images_dir / image_name
+                if not dest.exists():
+                    shutil.copy2(path, dest)
 
     # Save labels
     labels_path.write_text(
@@ -199,6 +217,9 @@ def run_clip_labeling(
                 encoding="utf-8",
             )
             logger.info(f"Saved label embeddings: {len(save_images)} -> {embeddings_path}")
+
+    if manifest_path:
+        update_manifest_after_label(manifest_path=manifest_path, labels=all_labels)
 
     logger.info(f"CLIP labeling done: {len(all_labels)} images labeled, saved to {labels_path}")
     return all_labels

@@ -9,7 +9,15 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from utils import CLIPModel, canonical_image_name, collect_image_paths, load_image
+from utils import (
+    CLIPModel,
+    canonical_image_name,
+    collect_image_paths,
+    load_image,
+    load_pipeline_manifest,
+    mark_manifest_step,
+    save_pipeline_manifest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +32,8 @@ def run_clip_filter(
     threshold: float = 0.30,
     flagged_names: set[str] | None = None,
     resume: bool = False,
+    persist_kept_images: bool = True,
+    manifest_path: Path | None = None,
 ) -> dict:
     """Filter images using CLIP — keep only soil-related images.
 
@@ -31,6 +41,7 @@ def run_clip_filter(
     avg positive similarity > threshold and positive > negative.
 
     Also removes any images flagged by overlay filter (watermark/text).
+    When `persist_kept_images=False`, writes decision logs only (no image copies).
 
     Returns stats dict.
     """
@@ -38,6 +49,7 @@ def run_clip_filter(
     image_paths = collect_image_paths(input_dir)
     flagged_names = flagged_names or set()
     name_root = input_dir / "images" if (input_dir / "images").is_dir() else input_dir
+    manifest = load_pipeline_manifest(manifest_path) if manifest_path else None
 
     stats = {"total": len(image_paths), "kept": 0, "discarded_soil": 0,
              "discarded_overlay": 0, "errors": 0}
@@ -70,10 +82,32 @@ def run_clip_filter(
                 if out_name in flagged_names:
                     stats["discarded_overlay"] += 1
                     writer.writerow([out_name, "N/A", "N/A", "overlay"])
+                    if manifest is not None:
+                        mark_manifest_step(
+                            manifest,
+                            out_name,
+                            "filter",
+                            {
+                                "kept": False,
+                                "reason": "overlay",
+                                "positive_score": None,
+                                "negative_score": None,
+                            },
+                        )
                     continue
                 # Skip already processed
                 if out_name in existing:
                     stats["kept"] += 1
+                    if manifest is not None:
+                        mark_manifest_step(
+                            manifest,
+                            out_name,
+                            "filter",
+                            {
+                                "kept": True,
+                                "reason": "resume_existing",
+                            },
+                        )
                     continue
 
                 img = load_image(p)
@@ -82,6 +116,16 @@ def run_clip_filter(
                     valid_paths.append((p, out_name))
                 else:
                     stats["errors"] += 1
+                    if manifest is not None:
+                        mark_manifest_step(
+                            manifest,
+                            out_name,
+                            "filter",
+                            {
+                                "kept": False,
+                                "reason": "load_error",
+                            },
+                        )
 
             if not images:
                 continue
@@ -98,11 +142,39 @@ def run_clip_filter(
                 writer.writerow([out_name, f"{pos_val:.4f}", f"{neg_val:.4f}", keep])
 
                 if keep:
-                    dest = output_dir / out_name
-                    shutil.copy2(path, dest)
+                    if persist_kept_images:
+                        dest = output_dir / out_name
+                        shutil.copy2(path, dest)
                     stats["kept"] += 1
+                    if manifest is not None:
+                        mark_manifest_step(
+                            manifest,
+                            out_name,
+                            "filter",
+                            {
+                                "kept": True,
+                                "reason": "passed",
+                                "positive_score": round(float(pos_val), 6),
+                                "negative_score": round(float(neg_val), 6),
+                            },
+                        )
                 else:
                     stats["discarded_soil"] += 1
+                    if manifest is not None:
+                        mark_manifest_step(
+                            manifest,
+                            out_name,
+                            "filter",
+                            {
+                                "kept": False,
+                                "reason": "low_soil_score",
+                                "positive_score": round(float(pos_val), 6),
+                                "negative_score": round(float(neg_val), 6),
+                            },
+                        )
+
+    if manifest_path and manifest is not None:
+        save_pipeline_manifest(manifest_path, manifest)
 
     logger.info(
         f"CLIP filter done: {stats['kept']} kept, "

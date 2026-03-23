@@ -139,6 +139,12 @@ Project settings live in `config/`:
 - `prompts.yaml`: CLIP prompts for filtering and class labeling
 - `queries.yaml`: web search query sets
 
+Storage behavior:
+
+- `single_image_store: true` keeps canonical images in `data/deduped/images`.
+- `filter` and `label` then write metadata/artifacts (logs, labels, embeddings) without copying images again.
+- Unified step state is written to `data/deduped/pipeline_manifest.json`.
+
 ## Outputs
 
 The pipeline writes processed datasets and exports to configured output paths in JSON and CSV formats.

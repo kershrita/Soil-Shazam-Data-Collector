@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 from datetime import datetime, timezone
@@ -111,6 +112,20 @@ def _fmt_pct(value) -> str:
     if value is None:
         return "N/A"
     return f"{value * 100:.1f}%"
+
+
+def _load_kept_filter_names(soil_log_path: Path) -> set[str]:
+    """Return filenames marked as kept=true in soil_filter.csv."""
+    if not soil_log_path.exists():
+        return set()
+    kept: set[str] = set()
+    with open(soil_log_path, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            filename = str((row or {}).get("filename", "")).strip()
+            status = str((row or {}).get("kept", "")).strip().lower()
+            if filename and status == "true":
+                kept.add(filename)
+    return kept
 
 
 @app.command()
@@ -312,6 +327,7 @@ def filter(
     filtered_dir = _resolve_path(cfg["paths"]["filtered"])
     logs_dir = _resolve_path(cfg["paths"]["logs"])
     logs_dir.mkdir(parents=True, exist_ok=True)
+    single_store = bool(cfg.get("single_image_store", True))
 
     selected = _find_first_input(
         [
@@ -372,12 +388,18 @@ def filter(
         threshold=soil_threshold,
         flagged_names=flagged_names,
         resume=resume,
+        persist_kept_images=not single_store,
+        manifest_path=deduped_dir / "pipeline_manifest.json",
     )
 
     run_cfg_path = logs_dir / "filter_run_config.json"
     run_cfg = {
         "soil_threshold": float(soil_threshold),
         "overlay_margin": float(filter_cfg["overlay_margin"]),
+        "source_step": source_step,
+        "source_dir": str(source_dir),
+        "single_image_store": single_store,
+        "persist_kept_images": (not single_store),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     run_cfg_path.write_text(json.dumps(run_cfg, indent=2), encoding="utf-8")
@@ -401,6 +423,8 @@ def label(
     deduped_dir = _resolve_path(cfg["paths"]["deduped"])
     filtered_dir = _resolve_path(cfg["paths"]["filtered"])
     labeled_dir = _resolve_path(cfg["paths"]["labeled"])
+    logs_dir = _resolve_path(cfg["paths"]["logs"])
+    single_store = bool(cfg.get("single_image_store", True))
 
     selected = _find_first_input(
         [
@@ -425,6 +449,19 @@ def label(
         )
     logger.info("label: input source=%s count=%s", source_step, source_count)
 
+    include_filenames: set[str] | None = None
+    soil_log_path = logs_dir / "soil_filter.csv"
+    filtered_count = _image_count(filtered_dir)
+    if filtered_count == 0 and soil_log_path.exists():
+        kept_from_filter = _load_kept_filter_names(soil_log_path)
+        if kept_from_filter:
+            include_filenames = kept_from_filter
+            logger.info(
+                "label: using %s kept filenames from %s (single-store mode)",
+                len(kept_from_filter),
+                soil_log_path,
+            )
+
     from utils import get_clip_model
 
     clip_model = get_clip_model(
@@ -444,6 +481,9 @@ def label(
         model_name=clip_cfg["model_name"],
         pretrained=clip_cfg["pretrained"],
         persist_embeddings=True,
+        copy_images=not single_store,
+        include_filenames=include_filenames,
+        manifest_path=deduped_dir / "pipeline_manifest.json",
     )
 
 
@@ -457,6 +497,7 @@ def export(
 
     cfg = _get_config(config_dir)
     labeled_dir = _resolve_path(cfg["paths"]["labeled"])
+    deduped_dir = _resolve_path(cfg["paths"]["deduped"])
     dataset_dir = _resolve_path(cfg["paths"]["dataset"])
     corrections_path = dataset_dir / "verification" / "corrections.json"
 
@@ -472,6 +513,7 @@ def export(
         input_dir=labeled_dir,
         corrections_path=corrections_path if corrections_path.exists() else None,
         output_dir=dataset_dir,
+        fallback_image_dirs=[deduped_dir / "images", deduped_dir],
     )
 
 

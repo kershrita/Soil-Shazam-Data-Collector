@@ -272,6 +272,11 @@ def create_app(config_dir: Path | None = None) -> Flask:
             img_dir = resized_dir / "images" if (resized_dir / "images").is_dir() else resized_dir
         else:
             img_dir = images_dir(step_id, cfg)
+            if step_id in {"filter", "label"} and not (img_dir / filename).is_file():
+                deduped_dir = resolve(cfg["paths"]["deduped"])
+                deduped_images = deduped_dir / "images" if (deduped_dir / "images").is_dir() else deduped_dir
+                if (deduped_images / filename).is_file():
+                    img_dir = deduped_images
         return send_from_directory(img_dir, filename)
 
     @app.route("/images/raw/<path:filename>")
@@ -293,6 +298,11 @@ def create_app(config_dir: Path | None = None) -> Flask:
             img_dir = resized_dir / "images" if (resized_dir / "images").is_dir() else resized_dir
         else:
             img_dir = images_dir(step_id, cfg)
+            if step_id in {"filter", "label"} and not (img_dir / filename).is_file():
+                deduped_dir = resolve(cfg["paths"]["deduped"])
+                deduped_images = deduped_dir / "images" if (deduped_dir / "images").is_dir() else deduped_dir
+                if (deduped_images / filename).is_file():
+                    img_dir = deduped_images
 
         src_path = img_dir / filename
         if not src_path.is_file():
